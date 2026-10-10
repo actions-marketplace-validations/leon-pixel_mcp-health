@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { formatHuman } from "./report.js";
+import { exitCode, formatHuman } from "./report.js";
 import { runCheck } from "./run.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -360,6 +360,173 @@ describe("http probe", () => {
       delete process.env.MCP_HEALTH_HTTP_TOKEN;
       rmSync(dir, { recursive: true, force: true });
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  it("warns on an OAuth challenge and fails a plain 401", async () => {
+    const server = createServer(async (req, res) => {
+      await readBody(req);
+      if (req.url === "/oauth") {
+        res.writeHead(401, {
+          "www-authenticate":
+            'Bearer realm="OAuth", resource_metadata="https://example.com/.well-known/oauth-protected-resource"',
+        });
+        res.end();
+        return;
+      }
+      res.writeHead(401);
+      res.end();
+    });
+    await new Promise<void>((resolveListen) => {
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    const base = `http://127.0.0.1:${address.port}`;
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-oauth-"));
+    try {
+      writeFileSync(
+        join(dir, "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            linearish: { url: `${base}/oauth` },
+            locked: { url: `${base}/plain` },
+          },
+        }),
+      );
+      const report = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 4000,
+      });
+      const byName = new Map(report.servers.map((serverReport) => [serverReport.name, serverReport]));
+      expect(byName.get("linearish")?.status).toBe("warn");
+      expect(byName.get("linearish")?.findings.map((f) => f.code)).toContain("PROBE_OAUTH");
+      expect(byName.get("linearish")?.findings.map((f) => f.code)).not.toContain(
+        "PROBE_HTTP_AUTH",
+      );
+      expect(byName.get("locked")?.status).toBe("fail");
+      expect(byName.get("locked")?.findings.map((f) => f.code)).toContain("PROBE_HTTP_AUTH");
+      expect(exitCode(report)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  it("sends Codex bearer and env headers without logging the secret", async () => {
+    const seen: { authorization?: string; extra?: string }[] = [];
+    const server = createServer(async (req, res) => {
+      const body = await readBody(req);
+      seen.push({
+        authorization: req.headers.authorization,
+        extra: req.headers["x-test"] as string | undefined,
+      });
+      const payload = JSON.parse(body) as { id?: number; method?: string };
+      const result =
+        payload.method === "tools/list"
+          ? { tools: [{ name: "echo" }] }
+          : {
+              protocolVersion: "2025-11-25",
+              capabilities: {},
+              serverInfo: { name: "auth", version: "0" },
+            };
+      send(
+        res,
+        200,
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id ?? 1, result }),
+        "application/json",
+      );
+    });
+    await new Promise<void>((resolveListen) => {
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-bearer-"));
+    process.env.MCP_HEALTH_BEARER = "super-secret-bearer-token";
+    process.env.MCP_HEALTH_HEADER = "super-secret-header-token";
+    try {
+      writeFileSync(
+        join(dir, "config.toml"),
+        [
+          "[mcp_servers.remote]",
+          `url = "http://127.0.0.1:${address.port}/mcp"`,
+          'bearer_token_env_var = "MCP_HEALTH_BEARER"',
+          "",
+          "[mcp_servers.remote.env_http_headers]",
+          'X-Test = "MCP_HEALTH_HEADER"',
+          "",
+        ].join("\n"),
+      );
+      const report = await runCheck({
+        root: dir,
+        files: [join(dir, "config.toml")],
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 4000,
+      });
+      expect(seen.some((entry) => entry.authorization === "Bearer super-secret-bearer-token")).toBe(
+        true,
+      );
+      expect(seen.some((entry) => entry.extra === "super-secret-header-token")).toBe(true);
+      expect(report.servers[0]?.status).toBe("ok");
+      const dumped = JSON.stringify(report);
+      expect(dumped).not.toContain("super-secret-bearer-token");
+      expect(dumped).not.toContain("super-secret-header-token");
+
+      delete process.env.MCP_HEALTH_BEARER;
+      delete process.env.MCP_HEALTH_HEADER;
+      const missing = await runCheck({
+        root: dir,
+        files: [join(dir, "config.toml")],
+        includeUserConfig: false,
+      });
+      const codes = missing.servers.flatMap((serverReport) =>
+        serverReport.findings.map((f) => f.code),
+      );
+      expect(codes).toContain("AUTH_ENV_UNSET");
+      expect(missing.servers.flatMap((s) => s.findings.map((f) => f.message)).join("\n")).toContain(
+        "MCP_HEALTH_BEARER",
+      );
+      expect(JSON.stringify(missing)).not.toContain("super-secret");
+    } finally {
+      delete process.env.MCP_HEALTH_BEARER;
+      delete process.env.MCP_HEALTH_HEADER;
+      rmSync(dir, { recursive: true, force: true });
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  it("includes ECONNREFUSED when the HTTP server is down", async () => {
+    const server = createServer((_req, res) => {
+      res.end();
+    });
+    await new Promise<void>((resolveListen) => {
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    const port = address.port;
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-refused-"));
+    try {
+      writeFileSync(
+        join(dir, "mcp.json"),
+        JSON.stringify({ mcpServers: { down: { url: `http://127.0.0.1:${port}/mcp` } } }),
+      );
+      const report = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 4000,
+      });
+      const failed = report.servers.flatMap((s) => s.findings).find((f) => f.code === "PROBE_FAILED");
+      expect(failed?.message).toMatch(/ECONNREFUSED/);
+      expect(exitCode(report)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

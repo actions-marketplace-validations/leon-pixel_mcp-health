@@ -18,7 +18,7 @@ inputs:
   node-version:
     description: Node.js version
     required: false
-    default: "20"
+    default: "22"
   annotations:
     description: Emit GitHub Actions warning and error annotations for findings
     required: false
@@ -29,6 +29,10 @@ inputs:
     default: mcp-health.sarif
   upload-sarif:
     description: Upload the SARIF file with github/codeql-action/upload-sarif. The job needs security-events write, and the repository needs code scanning.
+    required: false
+    default: "false"
+  fail-on-missing:
+    description: Fail the job when no MCP config file is found. Default false.
     required: false
     default: "false"
 
@@ -44,7 +48,7 @@ runs:
   using: composite
   steps:
     - name: Setup Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
 
@@ -64,6 +68,9 @@ runs:
         if [ "${{ inputs.annotations }}" = "true" ]; then
           flags+=(--github-annotations)
         fi
+        if [ "${{ inputs.fail-on-missing }}" != "true" ]; then
+          flags+=(--allow-missing)
+        fi
         sarif="${{ inputs.sarif-file }}"
         if [ -n "$sarif" ] && [ "$sarif" != "false" ]; then
           flags+=(--sarif "$sarif")
@@ -77,7 +84,7 @@ runs:
 
     - name: Upload SARIF
       if: ${{ always() && inputs.upload-sarif == 'true' && steps.run.outputs.sarif-file != '' }}
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       with:
         sarif_file: ${{ steps.run.outputs.sarif-file }}
 

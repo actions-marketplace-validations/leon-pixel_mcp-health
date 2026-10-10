@@ -11,6 +11,7 @@ import {
 } from "./check.js";
 import { parseConfigFile } from "./parse.js";
 import { omitStaleHealthy, runCheck } from "./run.js";
+import { exitCode } from "./report.js";
 import { splitPackageSpec, isRangePin, isVersionDrift } from "./npm.js";
 import { discoverConfigPaths, __testing } from "./discover.js";
 import { expandString } from "./vars.js";
@@ -267,24 +268,52 @@ describe("runCheck", () => {
       .join("\n");
     expect(message).toMatch(/PORT/);
     expect(message).toMatch(/number/);
-    expect(report.summary.fail).toBeGreaterThan(0);
+    expect(exitCode(report)).toBe(2);
+    expect(report.summary.servers).toBe(0);
+    expect(report.summary.ok + report.summary.warn + report.summary.fail).toBe(
+      report.summary.servers,
+    );
   });
 
-  it("flags unresolved input and env variables instead of HEALTHY", async () => {
+  it("warns on input and unset env variables and can fail with --strict-variables", async () => {
     const report = await runCheck({
       root: join(fixtures, "unresolved-var"),
       includeUserConfig: false,
     });
-    const codes = report.servers.flatMap((s) => s.findings.map((f) => f.code));
-    expect(codes).toContain("UNRESOLVED_VARIABLE");
-    expect(codes).not.toContain("HEALTHY");
-    const message = report.servers
+    const finding = report.servers
       .flatMap((s) => s.findings)
-      .map((f) => f.message)
-      .join("\n");
-    expect(message).toContain("${input:script}");
-    expect(message).toContain("${env:MCP_HEALTH_UNSET_VAR_SHOULD_NOT_EXIST}");
-    expect(report.summary.fail).toBeGreaterThan(0);
+      .find((item) => item.code === "UNRESOLVED_VARIABLE");
+    expect(finding?.severity).toBe("warn");
+    expect(finding?.message).toContain("${input:script}");
+    expect(finding?.message).toContain("${env:MCP_HEALTH_UNSET_VAR_SHOULD_NOT_EXIST}");
+    expect(report.servers.flatMap((s) => s.findings.map((f) => f.code))).not.toContain(
+      "HEALTHY",
+    );
+    expect(report.summary.fail).toBe(0);
+    expect(report.summary.warn).toBeGreaterThan(0);
+    expect(exitCode(report)).toBe(1);
+
+    const strict = await runCheck({
+      root: join(fixtures, "unresolved-var"),
+      includeUserConfig: false,
+      strictVariables: true,
+    });
+    expect(
+      strict.servers.flatMap((s) => s.findings).find((item) => item.code === "UNRESOLVED_VARIABLE")
+        ?.severity,
+    ).toBe("fail");
+    expect(exitCode(strict)).toBe(2);
+
+    const probed = await runCheck({
+      root: join(fixtures, "unresolved-var"),
+      includeUserConfig: false,
+      probe: true,
+      probeTimeoutMs: 1000,
+    });
+    const probedCodes = probed.servers.flatMap((s) => s.findings.map((f) => f.code));
+    expect(probedCodes).toContain("PROBE_SKIPPED");
+    expect(probedCodes).not.toContain("PROBE_OK");
+    expect(probedCodes).not.toContain("PROBE_FAILED");
   });
 
   it("still skips settings files that simply have no MCP section", async () => {
@@ -350,6 +379,202 @@ describe("resolveCommandOnPath", () => {
       expect(commandNeedsShell(join(dir, "npx.CMD"), "win32")).toBe(true);
       expect(commandNeedsShell(join(dir, "npx.EXE"), "win32")).toBe(false);
       expect(commandNeedsShell(join(dir, "npx.CMD"), "linux")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("audit fixes", () => {
+  it("keeps server summary counts equal to real servers", async () => {
+    const report = await runCheck({
+      root: join(fixtures, "issues"),
+      includeUserConfig: false,
+    });
+    expect(report.summary.ok + report.summary.warn + report.summary.fail).toBe(
+      report.summary.servers,
+    );
+    expect(report.summary.servers).toBe(4);
+  });
+
+  it("does not count a skipped settings file as a server", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-counts-"));
+    try {
+      const settings = join(dir, "settings.json");
+      const mcp = join(dir, "mcp.json");
+      writeFileSync(settings, JSON.stringify({ theme: "dark" }));
+      writeFileSync(
+        mcp,
+        JSON.stringify({ mcpServers: { local: { command: "node", args: ["--version"] } } }),
+      );
+      const report = await runCheck({
+        root: dir,
+        files: [settings, mcp],
+        includeUserConfig: false,
+      });
+      expect(report.summary.skipped).toBe(1);
+      expect(report.summary.servers).toBe(1);
+      expect(report.summary.ok).toBe(1);
+      expect(report.summary.ok + report.summary.warn + report.summary.fail).toBe(1);
+      expect(exitCode(report)).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips disabled Cursor and Codex servers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-disabled-"));
+    try {
+      const cursor = join(dir, "mcp.json");
+      writeFileSync(
+        cursor,
+        JSON.stringify({
+          mcpServers: {
+            off: { command: "definitely-missing-binary-xyz", disabled: true },
+            on: { command: "definitely-missing-binary-xyz" },
+          },
+        }),
+      );
+      const report = await runCheck({
+        root: dir,
+        files: [cursor],
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 1000,
+      });
+      const byName = new Map(report.servers.map((server) => [server.name, server]));
+      expect(byName.get("off")?.status).toBe("ok");
+      expect(byName.get("off")?.findings.map((f) => f.code)).toEqual(["DISABLED"]);
+      expect(byName.get("on")?.findings.map((f) => f.code)).toContain("COMMAND_NOT_FOUND");
+      expect(byName.get("off")?.findings.map((f) => f.code)).not.toContain("PROBE_FAILED");
+
+      const toml = join(dir, "config.toml");
+      writeFileSync(
+        toml,
+        [
+          "[mcp_servers.off]",
+          'command = "definitely-missing-binary-xyz"',
+          "enabled = false",
+          "",
+          "[mcp_servers.on]",
+          'command = "node"',
+          'args = ["--version"]',
+          "",
+        ].join("\n"),
+      );
+      const codex = await runCheck({
+        root: dir,
+        files: [toml],
+        includeUserConfig: false,
+      });
+      const codexByName = new Map(codex.servers.map((server) => [server.name, server]));
+      expect(codexByName.get("off")?.findings.map((f) => f.code)).toEqual(["DISABLED"]);
+      expect(codexByName.get("on")?.status).toBe("ok");
+      expect(exitCode(codex)).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses JSONC and recognizes Zed extension servers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-jsonc-"));
+    try {
+      mkdirSync(join(dir, ".zed"));
+      writeFileSync(
+        join(dir, ".zed", "settings.json"),
+        `{
+          // zed allows comments
+          "context_servers": {
+            "zed-local": {
+              "command": "node",
+              "args": ["--version"],
+            },
+            "from-ext": {
+              "source": "extension",
+              "settings": { "note": "https://example.com//not-a-comment" },
+            },
+            "broken": { "env": { "A": "b" } },
+            "paused": { "enabled": false, "command": "definitely-missing-binary-xyz" },
+          },
+        }`,
+      );
+      const report = await runCheck({ root: dir, includeUserConfig: false });
+      const byName = new Map(report.servers.map((server) => [server.name, server]));
+      expect(byName.get("zed-local")?.status).toBe("ok");
+      expect(byName.get("from-ext")?.findings.map((f) => f.code)).toEqual([
+        "EXTENSION_SERVER",
+      ]);
+      expect(byName.get("from-ext")?.status).toBe("ok");
+      expect(byName.get("broken")?.findings.map((f) => f.code)).toContain("NO_TRANSPORT");
+      expect(byName.get("paused")?.findings.map((f) => f.code)).toEqual(["DISABLED"]);
+      expect(report.servers.flatMap((s) => s.findings.map((f) => f.code))).not.toContain(
+        "PARSE_ERROR",
+      );
+      expect(report.summary.ok + report.summary.warn + report.summary.fail).toBe(
+        report.summary.servers,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails unknown variables, missing files, and a missing root", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-paths-"));
+    try {
+      const file = join(dir, "mcp.json");
+      writeFileSync(
+        file,
+        JSON.stringify({
+          mcpServers: { typo: { command: "${notARealVariable}" } },
+        }),
+      );
+      const typo = await runCheck({ root: dir, files: [file], includeUserConfig: false });
+      const finding = typo.servers.flatMap((s) => s.findings).find((item) => item.code === "UNRESOLVED_VARIABLE");
+      expect(finding?.severity).toBe("fail");
+      expect(exitCode(typo)).toBe(2);
+
+      const missing = await runCheck({
+        root: dir,
+        files: [join(dir, "nope.json")],
+        includeUserConfig: false,
+      });
+      expect(missing.servers[0]?.findings.map((f) => f.code)).toEqual(["FILE_NOT_FOUND"]);
+      expect(missing.servers.flatMap((s) => s.findings.map((f) => f.code))).not.toContain(
+        "PARSE_ERROR",
+      );
+      expect(exitCode(missing)).toBe(2);
+
+      const absent = await runCheck({
+        root: join(dir, "does-not-exist"),
+        includeUserConfig: false,
+      });
+      expect(absent.servers[0]?.findings.map((f) => f.code)).toEqual(["ROOT_NOT_FOUND"]);
+      expect(absent.servers.flatMap((s) => s.findings.map((f) => f.code))).not.toContain(
+        "NO_CONFIG",
+      );
+      expect(exitCode(absent)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when no config exists and can allow that", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-none-"));
+    try {
+      const warned = await runCheck({ root: dir, includeUserConfig: false });
+      expect(warned.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
+      expect(warned.servers[0]?.status).toBe("warn");
+      expect(exitCode(warned)).toBe(1);
+      expect(warned.summary.servers).toBe(0);
+
+      const allowed = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        allowMissing: true,
+      });
+      expect(allowed.servers[0]?.status).toBe("ok");
+      expect(allowed.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
+      expect(exitCode(allowed)).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
