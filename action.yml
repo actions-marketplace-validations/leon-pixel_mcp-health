@@ -1,4 +1,4 @@
-name: mcp-health
+name: mcp-health-doctor
 description: Scan MCP server configs for broken entries, drift, and optional probes
 author: leon-pixel
 
