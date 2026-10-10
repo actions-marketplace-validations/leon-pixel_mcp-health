@@ -9,6 +9,7 @@ const ServerEntrySchema = z
     url: z.string().optional(),
     type: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 
@@ -46,6 +47,17 @@ function mapServers(
   }));
 }
 
+export function formatZodError(error: z.ZodError): string {
+  const issues = error.issues.slice(0, 4);
+  if (issues.length === 0) return error.message;
+  return issues
+    .map((issue) => {
+      const path = issue.path.map(String).join(".");
+      return path ? `${path}: ${issue.message}` : issue.message;
+    })
+    .join("; ");
+}
+
 export function parseConfigFile(path: string): ConfigFile {
   const text = readFileSync(path, "utf8");
   let json: unknown;
@@ -57,25 +69,43 @@ export function parseConfigFile(path: string): ConfigFile {
     );
   }
 
-  const asMcp = McpServersDocSchema.safeParse(json);
-  if (asMcp.success) {
-    return {
-      path,
-      format: "mcpServers",
-      servers: mapServers(asMcp.data.mcpServers),
-    };
-  }
-
-  const asServers = ServersDocSchema.safeParse(json);
-  if (asServers.success) {
-    return {
-      path,
-      format: "servers",
-      servers: mapServers(asServers.data.servers),
-    };
-  }
-
   if (json !== null && typeof json === "object" && !Array.isArray(json)) {
+    const obj = json as Record<string, unknown>;
+
+    if ("mcpServers" in obj) {
+      const asMcp = McpServersDocSchema.safeParse(json);
+      if (asMcp.success) {
+        return {
+          path,
+          format: "mcpServers",
+          servers: mapServers(asMcp.data.mcpServers),
+        };
+      }
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: formatZodError(asMcp.error),
+      };
+    }
+
+    if ("servers" in obj) {
+      const asServers = ServersDocSchema.safeParse(json);
+      if (asServers.success) {
+        return {
+          path,
+          format: "servers",
+          servers: mapServers(asServers.data.servers),
+        };
+      }
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: formatZodError(asServers.error),
+      };
+    }
+
     return { path, format: "none", servers: [] };
   }
 

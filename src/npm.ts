@@ -1,3 +1,5 @@
+import { coerce, satisfies, valid, validRange } from "semver";
+
 /** Parse name@version / @scope/name@version into parts. */
 export function splitPackageSpec(spec: string): {
   name: string;
@@ -11,6 +13,32 @@ export function splitPackageSpec(spec: string): {
   const at = spec.indexOf("@");
   if (at <= 0) return { name: spec, version: undefined };
   return { name: spec.slice(0, at), version: spec.slice(at + 1) };
+}
+
+const FLOATING = new Set(["latest", "next", "*"]);
+
+function latestVersion(version: string): string | null {
+  return valid(version) ?? valid(coerce(version));
+}
+
+/** True when the pin is a semver range rather than one exact version. */
+export function isRangePin(pinned: string): boolean {
+  if (FLOATING.has(pinned)) return false;
+  if (valid(pinned)) return false;
+  return validRange(pinned) !== null;
+}
+
+/**
+ * True when the pinned spec does not accept the registry's latest version.
+ * Exact versions drift on inequality. Ranges drift only when latest is outside them.
+ */
+export function isVersionDrift(pinned: string, latest: string): boolean {
+  if (FLOATING.has(pinned)) return true;
+  const latestClean = latestVersion(latest);
+  if (!latestClean) return pinned !== latest;
+  const range = validRange(pinned);
+  if (range && satisfies(latestClean, range)) return false;
+  return true;
 }
 
 export type NpmLatestResult =
@@ -55,11 +83,4 @@ export async function fetchNpmLatest(
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", onAbort);
   }
-}
-
-/** Loose semver-ish compare: returns true if pinned differs from latest. */
-export function isVersionDrift(pinned: string, latest: string): boolean {
-  // Treat dist-tags as drift-prone vs concrete latest
-  if (pinned === "latest" || pinned === "next" || pinned === "*") return true;
-  return pinned !== latest;
 }

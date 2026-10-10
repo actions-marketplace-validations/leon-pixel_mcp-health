@@ -1,19 +1,29 @@
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { discoverConfigPaths } from "./discover.js";
 import { isOptionalMcpFile, parseConfigFile } from "./parse.js";
 import { checkConfig, extractNpxPackage } from "./check.js";
 import {
   fetchNpmLatest,
+  isRangePin,
   isVersionDrift,
   splitPackageSpec,
 } from "./npm.js";
 import { probeServer, worst } from "./probe.js";
+import { expandServerVariables } from "./vars.js";
 import type {
   Finding,
   HealthReport,
   ServerReport,
   Severity,
 } from "./types.js";
+
+/** Drop the static HEALTHY line once a real warning or failure exists. */
+export function omitStaleHealthy(findings: Finding[]): Finding[] {
+  if (findings.some((finding) => finding.severity === "warn" || finding.severity === "fail")) {
+    return findings.filter((finding) => finding.code !== "HEALTHY");
+  }
+  return findings;
+}
 
 export type RunOptions = {
   root: string;
@@ -62,9 +72,22 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       continue;
     }
 
+    if (parsed.format === "mcpServers" || parsed.format === "servers") {
+      parsed = {
+        ...parsed,
+        servers: parsed.servers.map((server) =>
+          expandServerVariables(server, { root }),
+        ),
+      };
+    }
+
     const { perServer, findings } = checkConfig(parsed);
 
-    if (parsed.format === "none" || parsed.format === "unknown") {
+    if (
+      parsed.format === "none" ||
+      parsed.format === "unknown" ||
+      parsed.format === "invalid"
+    ) {
       let status: Severity = findings.some((f) => f.severity === "fail")
         ? "fail"
         : findings.some((f) => f.severity === "warn")
@@ -151,19 +174,25 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
             });
             result.status = worst(result.status, "warn");
           } else if (isVersionDrift(version, latest.latest)) {
+            const message = isRangePin(version)
+              ? `Pinned range ${version} does not include npm latest ${latest.latest}`
+              : `Pinned ${version} but npm latest is ${latest.latest}`;
             result.findings.push({
               severity: "warn",
               code: "NPM_DRIFT",
-              message: `Pinned ${version} but npm latest is ${latest.latest}`,
+              message,
               server: server.name,
               file: path,
             });
             result.status = worst(result.status, "warn");
           } else {
+            const message = isRangePin(version)
+              ? `Pinned range ${version} includes npm latest ${latest.latest}`
+              : `Pinned ${version} matches npm latest`;
             result.findings.push({
               severity: "ok",
               code: "NPM_CURRENT",
-              message: `Pinned ${version} matches npm latest`,
+              message,
               server: server.name,
               file: path,
             });
@@ -175,7 +204,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
         const probed = await probeServer(server, {
           timeoutMs: probeTimeoutMs,
           file: path,
-          cwd: dirname(path),
+          cwd: root,
         });
         result.findings.push(...probed.findings);
         result.status = worst(result.status, probed.status);
@@ -189,12 +218,17 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
         });
       }
 
+      const findingsForReport = omitStaleHealthy(result.findings);
+      const status = findingsForReport.reduce<Severity>(
+        (current, item) => worst(current, item.severity),
+        "ok",
+      );
       servers.push({
         name: server.name,
         file: path,
         transport: server.transport.kind,
-        status: result.status,
-        findings: result.findings,
+        status,
+        findings: findingsForReport,
       });
     }
   }

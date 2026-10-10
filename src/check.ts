@@ -1,23 +1,140 @@
-import type { ConfigFile, Finding, Severity } from "./types.js";
+import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
+
+const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
+
+function pathDelimiter(platform: NodeJS.Platform): string {
+  return platform === "win32" ? ";" : ":";
+}
+
+function pathExtensions(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string[] {
+  if (platform !== "win32") return [""];
+  const raw = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const exts = raw
+    .split(";")
+    .map((ext) => ext.trim())
+    .filter(Boolean)
+    .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`));
+  return ["", ...exts];
+}
+
+function hasPathExtension(command: string, extensions: string[]): boolean {
+  const lower = command.toLowerCase();
+  return extensions.some(
+    (ext) => ext.length > 0 && lower.endsWith(ext.toLowerCase()),
+  );
+}
+
+function isRunnable(file: string, platform: NodeJS.Platform): boolean {
+  if (!existsSync(file)) return false;
+  if (platform === "win32") return true;
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `.cmd` and `.bat` files do not start via spawn() unless `shell` is set.
+ * `.exe` does not need a shell.
+ */
+export function commandNeedsShell(
+  executable: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" && /\.(cmd|bat)$/i.test(executable);
+}
+
+/**
+ * Resolve a command the way the host shell would.
+ * On Windows, `npx` is `npx.cmd` / `npx.exe` and is found via PATHEXT.
+ * Returns an absolute path when the command is on PATH.
+ */
+export function resolveCommandOnPath(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const extensions = pathExtensions(env, platform);
+  const names =
+    platform === "win32" && !hasPathExtension(command, extensions)
+      ? extensions.map((ext) => `${command}${ext}`)
+      : [command];
+
+  const direct =
+    isAbsolute(command) || command.includes("/") || command.includes("\\");
+  if (direct) {
+    for (const name of names) {
+      if (isRunnable(name, platform)) return name;
+    }
+    return undefined;
+  }
+
+  const pathEnv = env.PATH ?? "";
+  for (const dir of pathEnv.split(pathDelimiter(platform))) {
+    if (!dir) continue;
+    for (const name of names) {
+      const full = join(dir, name);
+      if (isRunnable(full, platform)) return full;
+    }
+  }
+  return undefined;
+}
 
 function commandOnPath(command: string): boolean {
-  if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    try {
-      accessSync(command, constants.X_OK);
-      return true;
-    } catch {
-      return existsSync(command);
+  return resolveCommandOnPath(command) !== undefined;
+}
+
+function unresolvedTokens(value: string): string[] {
+  return value.match(UNRESOLVED_VAR) ?? [];
+}
+
+function unresolvedVariableFinding(
+  server: ParsedServer,
+  file: string,
+): Finding | undefined {
+  const hits: string[] = [];
+  const add = (where: string, value: string) => {
+    for (const token of unresolvedTokens(value)) {
+      hits.push(`${token} in ${where}`);
+    }
+  };
+
+  if (server.transport.kind === "stdio") {
+    add("command", server.transport.command);
+    server.transport.args.forEach((arg, index) => add(`args[${index}]`, arg));
+  } else if (server.transport.kind === "http") {
+    add("url", server.transport.url);
+  }
+
+  const env = server.raw.env;
+  if (env && typeof env === "object" && !Array.isArray(env)) {
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value === "string") add(`env.${key}`, value);
     }
   }
 
-  const pathEnv = process.env.PATH ?? "";
-  for (const dir of pathEnv.split(delimiter)) {
-    if (!dir) continue;
-    if (existsSync(join(dir, command))) return true;
+  const headers = server.raw.headers;
+  if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+    for (const [key, value] of Object.entries(headers)) {
+      if (typeof value === "string") add(`headers.${key}`, value);
+    }
   }
-  return false;
+
+  if (hits.length === 0) return undefined;
+  return {
+    severity: "fail",
+    code: "UNRESOLVED_VARIABLE",
+    message: `Unresolved config variable ${hits.join("; ")}. workspaceFolder, userHome, pathSeparator, and env are expanded; input and other variables are not`,
+    server: server.name,
+    file,
+  };
 }
 
 /** True when package ref includes an explicit version after the name. */
@@ -32,11 +149,16 @@ export function isVersionPinned(pkg: string): boolean {
 
 export function extractNpxPackage(command: string, args: string[]): string | undefined {
   const cleaned = args.filter((a) => a !== "-y" && a !== "--yes" && a !== "--");
-  if (command === "npx") {
+  if (command === "npx" || command.endsWith("/npx") || command.endsWith("\\npx")) {
     const pkg = cleaned.find((a) => !a.startsWith("-"));
     return pkg;
   }
-  if (command === "npm") {
+  const base = command.split(/[/\\]/).pop() ?? command;
+  if (base === "npx" || base === "npx.cmd" || base === "npx.exe") {
+    const pkg = cleaned.find((a) => !a.startsWith("-"));
+    return pkg;
+  }
+  if (command === "npm" || base === "npm" || base === "npm.cmd" || base === "npm.exe") {
     // npm exec [-y] pkg
     const execIdx = cleaned.indexOf("exec");
     if (execIdx === -1) return undefined;
@@ -60,6 +182,16 @@ export function checkConfig(file: ConfigFile): {
     string,
     { status: Severity; findings: Finding[] }
   >();
+
+  if (file.format === "invalid") {
+    findings.push({
+      severity: "fail",
+      code: "SCHEMA_ERROR",
+      message: file.error ?? "MCP config failed schema validation",
+      file: file.path,
+    });
+    return { findings, perServer };
+  }
 
   if (file.format === "unknown") {
     findings.push({
@@ -105,6 +237,9 @@ export function checkConfig(file: ConfigFile): {
       });
     }
 
+    const unresolved = unresolvedVariableFinding(server, file.path);
+    if (unresolved) local.push(unresolved);
+
     if (server.transport.kind === "unknown") {
       local.push({
         severity: "fail",
@@ -140,8 +275,9 @@ export function checkConfig(file: ConfigFile): {
 
     if (server.transport.kind === "stdio") {
       const { command, args } = server.transport;
+      const commandUnresolved = unresolvedTokens(command).length > 0;
 
-      if (!commandOnPath(command)) {
+      if (!commandUnresolved && !commandOnPath(command)) {
         local.push({
           severity: "fail",
           code: "COMMAND_NOT_FOUND",
@@ -151,7 +287,16 @@ export function checkConfig(file: ConfigFile): {
         });
       }
 
-      if (command === "npx" || command === "npm") {
+      const base = command.split(/[/\\]/).pop() ?? command;
+      if (
+        !commandUnresolved &&
+        (base === "npx" ||
+          base === "npx.cmd" ||
+          base === "npx.exe" ||
+          base === "npm" ||
+          base === "npm.cmd" ||
+          base === "npm.exe")
+      ) {
         const pkg = extractNpxPackage(command, args);
         if (!pkg) {
           local.push({

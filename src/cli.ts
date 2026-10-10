@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { runCheck } from "./run.js";
 import { exitCode, formatHuman, formatJson } from "./report.js";
+import { VERSION } from "./version.js";
 
 const program = new Command();
 
@@ -10,7 +11,7 @@ program
   .description(
     "Scan MCP server configs and report health, missing commands, and unpinned packages",
   )
-  .version("1.0.0");
+  .version(VERSION);
 
 program
   .command("check")

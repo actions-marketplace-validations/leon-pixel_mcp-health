@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "local": {
+      "command": "node",
+      "args": ["${workspaceFolder}/server.mjs"],
+      "env": {
+        "MCP_HEALTH_MARK": "${env:MCP_HEALTH_MARK_SRC}"
+      }
+    }
+  }
+}
