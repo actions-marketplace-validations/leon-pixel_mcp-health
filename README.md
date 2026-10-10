@@ -1,24 +1,32 @@
 # mcp-health
 
-CLI + GitHub Action that scans MCP (Model Context Protocol) server configs and reports **broken entries, missing commands, bad URLs, placeholder env vars, unpinned packages, npm drift, and optional initialize probes**.
+CLI and GitHub Action that scans MCP (Model Context Protocol) server configs and reports **broken entries, missing commands, bad URLs, placeholder env vars, unpinned packages, npm drift, and optional initialize probes**.
 
-Catch rotten MCP configs before agents fail mysteriously.
+Catch rotten MCP configs before agents fail on them.
 
 ## Install
 
+Node.js 20 or newer.
+
+The npm package name is `@leon-pixel/mcp-health`. The unscoped name `mcp-health` was published by someone else and then unpublished, so npm will not let this project use it. The command name is still `mcp-health`.
+
+From a checkout of this repository:
+
 ```bash
-# from source
 npm install
 npm run check -- --no-user fixtures/healthy
-
-# from npm (after publish)
-npm i -g mcp-health
-mcp-health check .
-# or
-npx mcp-health check .
 ```
 
-Requires **Node 20+**.
+From npm, once a maintainer has published a release (see [Releases](#releases)):
+
+```bash
+npm i -g @leon-pixel/mcp-health
+mcp-health check .
+```
+
+```bash
+npx @leon-pixel/mcp-health check .
+```
 
 ## Usage
 
@@ -55,7 +63,9 @@ jobs:
           args: --no-user
 ```
 
-Optional args: `--online`, `--probe`, `--probe-timeout 8000`, `--json`.
+`v1` is a moving tag. The [release workflow](.github/workflows/release.yml) points it at the latest stable `v1.x.y` release. It is not on the repository yet: the only tag today is `v1.0.0`, and that commit does not include fixes made after 1.0.0. After `v1.1.0` is tagged, `leon-pixel/mcp-health@v1` tracks the latest 1.x commit. Until that tag exists, pin an immutable release or a commit SHA.
+
+The action is not listed on the GitHub Marketplace. Install it from this repository. Optional args: `--online`, `--probe`, `--probe-timeout 8000`, `--json`.
 
 ## What it scans
 
@@ -65,9 +75,12 @@ Optional args: `--online`, `--probe`, `--probe-timeout 8000`, `--json`.
 
 ## Checks
 
-- Offline: JSON shape, PATH, URLs, pins, placeholders
-- `--online`: npm latest vs pinned (`NPM_DRIFT`)
-- `--probe`: MCP `initialize` handshake (stdio spawn / HTTP POST); never logs env values
+- Offline: JSON shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders
+- Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, and `${env:NAME}` are expanded. `${input:…}` and anything else still in the config fail the server instead of being reported healthy
+- `--online`: npm latest vs the pinned version or semver range (`NPM_DRIFT` only when latest is outside the pin)
+- `--probe`: MCP handshake from the project root (stdio spawn, or HTTP POST with the config's headers). Stdio matches the JSON-RPC id and skips logs and notifications. HTTP accepts a JSON body or a Streamable HTTP SSE response. Env values are never printed
+
+The initialize request uses protocol revision `2025-11-25`. If the server rejects that method, the probe tries `server/discover` on `2026-07-28`.
 
 ## Example
 
@@ -78,17 +91,25 @@ Optional args: `--online`, `--probe`, `--probe-timeout 8000`, `--json`.
     - WARN UNPINNED_PACKAGE: ...
 ```
 
-## Publish / releases
+## Releases
 
-- Tags `v*` create a GitHub Release (see `.github/workflows/release.yml`)
-- npm publish runs when `NPM_TOKEN` is set on the repo; otherwise that step is skipped
-- If the unscoped name is blocked on npm, publish as `@leon-pixel/mcp-health` instead
+Pushing a stable tag `vX.Y.Z` that matches `version` in `package.json` runs [`.github/workflows/release.yml`](.github/workflows/release.yml). That workflow:
+
+1. Runs the test suite and build
+2. Creates a GitHub Release
+3. Moves the major tag (`v1` for a `v1.x.y` release) to that commit
+4. Publishes `@leon-pixel/mcp-health` to npm when the repository secret `NPM_TOKEN` is set
+
+`NPM_TOKEN` is an npm automation token that can publish the `@leon-pixel` scope. When the secret is absent, the workflow still cuts the GitHub Release and moves the major tag, and it skips npm publish.
+
+The action is not published to the GitHub Marketplace by this workflow. Marketplace listing is a separate step on the GitHub release page.
 
 ## Tradeoffs
 
-- Default scan is offline (CI-safe)
-- `--probe` runs real processes — avoid on untrusted configs
-- IDE PATH may differ from CI/terminal
+- The default scan is offline, so it is safe in CI
+- `--probe` runs real processes. Do not point it at configs you do not trust
+- IDE `PATH` can differ from the PATH in CI or a terminal
+- `${input:…}` values are not prompted. They are reported as unresolved
 
 ## Roadmap
 

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "noisy": {
+      "command": "node",
+      "args": ["server.mjs"]
+    }
+  }
+}

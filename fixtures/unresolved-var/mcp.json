@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "needs-input": {
+      "command": "node",
+      "args": ["${input:script}"],
+      "env": {
+        "TOKEN": "${env:MCP_HEALTH_UNSET_VAR_SHOULD_NOT_EXIST}"
+      }
+    }
+  }
+}

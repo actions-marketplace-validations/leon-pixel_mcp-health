@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "modern": {
+      "command": "node",
+      "args": ["server.mjs"]
+    }
+  }
+}

@@ -1,21 +1,51 @@
 name: release
 
+# Stable tags only. v1.2.3 matches; the moving major tag v1 does not, so
+# updating v1 does not start another release.
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: write
 
 jobs:
-  github-release:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Extract version
+        with:
+          fetch-depth: 0
+
+      - name: Require a stable tag that matches package.json
         id: ver
-        run: echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Tag ${tag} is not a stable vX.Y.Z release."
+            echo "Prerelease tags are not published and do not move the major tag."
+            exit 1
+          fi
+          pkg="$(node -p "require('./package.json').version")"
+          ver="${tag#v}"
+          if [[ "$ver" != "$pkg" ]]; then
+            echo "Tag ${tag} does not match package.json version ${pkg}."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "major=v${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -24,24 +54,24 @@ jobs:
           body_path: CHANGELOG.md
           generate_release_notes: true
 
-  npm-publish:
-    runs-on: ubuntu-latest
-    needs: github-release
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
-      - name: Publish to npm
+      - name: Move the major version tag
+        shell: bash
+        run: |
+          major="${{ steps.ver.outputs.major }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$major"
+          git push origin "refs/tags/${major}" --force
+          echo "Moved ${major} to ${GITHUB_SHA}"
+
+      - name: Publish @leon-pixel/mcp-health to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "Skipping npm publish (NPM_TOKEN not configured)"
+            echo "Skipping npm publish."
+            echo "Add an npm automation token as the NPM_TOKEN repository secret to publish @leon-pixel/mcp-health."
             exit 0
           fi
           npm publish --access public

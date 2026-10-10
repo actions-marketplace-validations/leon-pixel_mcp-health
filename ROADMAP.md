@@ -1,34 +1,35 @@
-# Roadmap to v1.0
+# Roadmap
 
 ## Product promise
 
-`mcp-health` is the local/CI CLI that answers: **“Will my MCP servers actually load, or will agents fail on broken configs?”**
+`mcp-health` is the local and CI check that answers: **will my MCP servers actually load, or will agents fail on a broken config?**
 
-Not a registry UI. Not a hosted dashboard. A sharp check + optional probe.
+It is not a registry UI and not a hosted dashboard. It is a config scan plus an optional handshake.
 
-## Definition of done — v1.0
+## Shipped in 1.0.0
 
 | # | Capability | Status |
 |---|------------|--------|
-| 1 | Static config scan | Done |
-| 2 | Client path matrix | Done |
-| 3 | npm registry version drift (`--online`) | Done |
-| 4 | Optional smoke probe (`--probe`) | Done |
-| 5 | Reusable GitHub Action | Done (1.0.0) |
-| 6 | Release workflow + npm publish path | Done (1.0.0) |
-| 7 | Docs / changelog | Done |
-| 8 | Portfolio case study | Next (separate repo) |
+| 1 | Static config scan | Shipped |
+| 2 | Client path matrix (Cursor, VS Code, Claude Code, Claude Desktop) | Shipped |
+| 3 | npm registry version drift (`--online`) | Shipped |
+| 4 | Optional smoke probe (`--probe`) | Shipped |
+| 5 | Reusable GitHub Action | Shipped in the repo. Not listed on the Marketplace yet |
+| 6 | Release workflow | Shipped. npm publish runs when `NPM_TOKEN` is set. The package is not on npm yet |
+| 7 | Docs and changelog | Shipped |
 
-**Out of scope for v1.0:** hosted dashboard, auto-fix configs, registry browser UI, paid cloud.
+0.1.0 through 1.0.0 were cut on the same day as the initial public commits. See the changelog.
 
-## Post-1.0 ideas (optional)
+## Next
 
-- SARIF output for GitHub code scanning
-- `--fix` suggestions (non-destructive report only first)
-- Broader Windsurf / Continue path matrix
-- Official npm publish once `NPM_TOKEN` is configured (or scoped rename if name tombstoned)
+- Publish `@leon-pixel/mcp-health` by adding `NPM_TOKEN` and tagging a stable release
+- List the Action on the GitHub Marketplace from that release
+- `tools/list` probe for servers that expose no tools
+- SARIF output and pull request annotations
+- Windsurf, Zed, and Codex config paths
+- A short demo recording in the README
+- A comparison with MCP Inspector and other MCP doctor or liveness tools
 
-## Autonomy defaults
+## Out of scope
 
-**Do without asking:** implement, test, commit, push, tag releases.  
-**Ask only if:** npm name blocked requiring rename, breaking CLI redesign, secrets/SaaS scope.
+Hosted dashboard, auto-fix that rewrites configs, registry browser, paid cloud.

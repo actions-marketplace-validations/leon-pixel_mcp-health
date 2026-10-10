@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "crash": {
+      "command": "node",
+      "args": ["exit.mjs"]
+    }
+  }
+}
