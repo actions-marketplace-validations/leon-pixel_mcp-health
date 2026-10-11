@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
+import { parseJsonc } from "./jsonc.js";
 import type { ConfigFile, ParsedServer, ServerTransport } from "./types.js";
 
 const CommandObjectSchema = z.object({
@@ -18,6 +19,12 @@ const ServerEntrySchema = z
     type: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
     headers: z.record(z.string(), z.string()).optional(),
+    disabled: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+    source: z.string().optional(),
+    settings: z.unknown().optional(),
+    bearerTokenEnvVar: z.string().optional(),
+    envHttpHeaders: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 
@@ -200,12 +207,49 @@ function parseCodexToml(path: string, text: string): ConfigFile {
         error: `mcp_servers.${name}.url must be a string`,
       };
     }
+    if (entry.enabled !== undefined && typeof entry.enabled !== "boolean") {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: `mcp_servers.${name}.enabled must be a boolean`,
+      };
+    }
+    if (
+      entry.bearer_token_env_var !== undefined &&
+      typeof entry.bearer_token_env_var !== "string"
+    ) {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: `mcp_servers.${name}.bearer_token_env_var must be a string`,
+      };
+    }
+    const envHeaders =
+      entry.env_http_headers === undefined
+        ? undefined
+        : asStringRecord(entry.env_http_headers);
+    if (entry.env_http_headers !== undefined && !envHeaders) {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: `mcp_servers.${name}.env_http_headers values must be strings`,
+      };
+    }
     record[name] = {
       command: typeof entry.command === "string" ? entry.command : undefined,
       args,
       url: typeof entry.url === "string" ? entry.url : undefined,
       env,
       headers,
+      enabled: typeof entry.enabled === "boolean" ? entry.enabled : undefined,
+      bearerTokenEnvVar:
+        typeof entry.bearer_token_env_var === "string"
+          ? entry.bearer_token_env_var
+          : undefined,
+      envHttpHeaders: envHeaders,
     };
   }
 
@@ -220,7 +264,7 @@ export function parseConfigFile(path: string): ConfigFile {
 
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = parseJsonc(text);
   } catch (err) {
     throw new Error(
       `Invalid JSON in ${path}: ${err instanceof Error ? err.message : String(err)}`,

@@ -53,5 +53,7 @@ export type HealthReport = {
     fail: number;
     files: number;
     servers: number;
+    /** Settings files with no MCP section. Not included in ok/warn/fail. */
+    skipped: number;
   };
 };

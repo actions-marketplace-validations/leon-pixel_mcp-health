@@ -12,18 +12,9 @@ Real `mcp-health check --no-user` output. The first run is `fixtures/issues` (ex
 
 ## Install
 
-Node.js 20 or newer.
+Node.js 22.12 or newer.
 
 The npm package name is `@leon-pixel/mcp-health`. The unscoped name `mcp-health` was published by someone else and then unpublished, so npm will not let this project use it. The command name is still `mcp-health`.
-
-From a checkout of this repository:
-
-```bash
-npm install
-npm run check -- --no-user fixtures/healthy
-```
-
-From npm, once a maintainer has published a release (see [Releases](#releases)):
 
 ```bash
 npm i -g @leon-pixel/mcp-health
@@ -34,18 +25,26 @@ mcp-health check .
 npx @leon-pixel/mcp-health check .
 ```
 
+From a checkout of this repository:
+
+```bash
+npm install
+npm run check -- --no-user fixtures/healthy
+```
+
 ## Usage
 
 ```bash
-npm run check -- .
-npm run check -- --no-user fixtures/issues
-npm run check -- --no-user --online fixtures/healthy
-npm run check -- --no-user --probe --probe-timeout 5000 fixtures/probe-ok
-npm run check -- --no-user --probe --no-tools fixtures/probe-ok
-npm run check -- --no-user --sarif mcp-health.sarif fixtures/issues
-npm run check -- --no-user --github-annotations fixtures/issues
-npm run check -- --no-user --json fixtures/healthy
-npm run check -- --no-user -f path/to/mcp.json .
+mcp-health check .
+mcp-health check --no-user fixtures/issues
+mcp-health check --no-user --online fixtures/healthy
+mcp-health check --no-user --probe --probe-timeout 5000 fixtures/probe-ok
+mcp-health check --no-user --probe --no-tools fixtures/probe-ok
+mcp-health check --no-user --sarif mcp-health.sarif fixtures/issues
+mcp-health check --no-user --github-annotations fixtures/issues
+mcp-health check --no-user --json fixtures/healthy
+mcp-health check --no-user -f path/to/mcp.json .
+npx @leon-pixel/mcp-health check --no-user .
 ```
 
 ### Exit codes
@@ -67,16 +66,16 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: leon-pixel/mcp-health@v1
         with:
           path: .
           args: --no-user
 ```
 
-`v1` is a moving tag. The [release workflow](.github/workflows/release.yml) points it at the latest stable `v1.x.y` release. It is not on the repository yet: the only tag today is `v1.0.0`, and that commit does not include the fixes in 1.1.0 or the checks in 1.2.0. `package.json` on this branch is `1.2.0`. After that version is tagged, `leon-pixel/mcp-health@v1` tracks it. Until a tag newer than `v1.0.0` exists, pin an immutable release or a commit SHA.
+`v1` is a moving tag. The [release workflow](.github/workflows/release.yml) points it at the latest stable `v1.x.y` release. It currently tracks the published 1.2.0 release and moves again when a newer stable tag is pushed.
 
-The action is not listed on the GitHub Marketplace. Install it from this repository.
+The action is listed on the Marketplace as [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor). `uses: leon-pixel/mcp-health@v1` installs that listing.
 
 Annotations are on by default (`::error` and `::warning` in the job log). A SARIF 2.1.0 file is written to `mcp-health.sarif` unless `sarif-file` is `false`. Uploading that file to code scanning is off unless you opt in. The upload needs `security-events: write` on the job, and the repository has to have code scanning enabled.
 
@@ -85,7 +84,7 @@ permissions:
   contents: read
   security-events: write
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@v5
   - uses: leon-pixel/mcp-health@v1
     with:
       args: --no-user
@@ -96,7 +95,9 @@ steps:
 
 The check step itself exits 0 so the upload can still run after findings. A following step exits with the real mcp-health code, so the job still fails on warnings and failures. The `exit-code` output is that code (`0`, `1`, or `2`).
 
-Optional `args`: `--online`, `--probe`, `--no-tools`, `--probe-timeout 8000`, `--json`.
+A repository with no MCP config is `NO_CONFIG`. That warning does not fail the job unless `fail-on-missing` is `true`.
+
+Optional `args`: `--online`, `--probe`, `--no-tools`, `--strict-variables`, `--probe-timeout 8000`, `--json`.
 
 ## What it scans
 
@@ -108,8 +109,8 @@ Optional `args`: `--online`, `--probe`, `--no-tools`, `--probe-timeout 8000`, `-
 | VS Code | `.vscode/mcp.json` | `servers` |
 | Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | `mcpServers` |
 | Windsurf | `.windsurf/mcp_config.json` | `mcpServers`. Remote URLs may be `serverUrl` or `url` |
-| Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }` |
-| Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `url`, `env`, `http_headers` |
+| Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }`. `"source": "extension"` is an extension server. Comments and trailing commas are allowed |
+| Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `url`, `env`, `http_headers`, `bearer_token_env_var`, `env_http_headers`, `enabled` |
 
 A Codex `config.toml` or a settings file with no MCP section is skipped. It is not a failed scan.
 
@@ -126,9 +127,11 @@ A Codex `config.toml` or a settings file with no MCP section is skipped. It is n
 ## Checks
 
 - Offline: JSON and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders
-- Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, and `${env:NAME}` are expanded. `${input:…}` and anything else still in the config fail the server instead of being reported healthy
+- Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, and a set `${env:NAME}` are expanded. `${input:…}` and an unset `${env:NAME}` are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. `--strict-variables` fails on the warnings too. Values are never printed
+- `disabled: true` (Cursor) and `enabled: false` (Codex, Zed) are reported as disabled and are not checked
+- Zed `"source": "extension"` is an extension-provided server. It is not a missing command
 - `--online`: npm latest vs the pinned version or semver range (`NPM_DRIFT` only when latest is outside the pin)
-- `--probe`: MCP handshake from the project root (stdio spawn, or HTTP POST with the config's headers). Stdio matches the JSON-RPC id and skips logs and notifications. HTTP accepts a JSON body or a Streamable HTTP SSE response. Env values are never printed
+- `--probe`: MCP handshake from the project root (stdio spawn, or HTTP POST). Stdio matches the JSON-RPC id and skips logs and notifications. HTTP sends the config headers, plus Codex `bearer_token_env_var` and `env_http_headers` when those variables are set. A 401 with an OAuth `WWW-Authenticate` challenge is a warning (`PROBE_OAUTH`); the editor signs in and this probe does not. Env values are never printed
 - After a successful handshake, `--probe` also calls `tools/list`. One or more tools is `TOOLS_OK`. An empty list is a warning, `EMPTY_TOOLS`, not a failure and not `HEALTHY`. A tools/list error or timeout is a warning, `TOOLS_LIST_FAILED`. `--no-tools` skips that call
 
 The initialize request uses protocol revision `2025-11-25`. If the server rejects that method, the probe tries `server/discover` on `2026-07-28`, then `tools/list` on that same revision.
@@ -152,23 +155,36 @@ mcp-health reads the MCP config files already in a repo (and, unless you pass `-
 
 ## Releases
 
+`@leon-pixel/mcp-health@1.2.0` is the current npm `latest`. The Marketplace listing is [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor).
+
 Pushing a stable tag `vX.Y.Z` that matches `version` in `package.json` runs [`.github/workflows/release.yml`](.github/workflows/release.yml). That workflow:
 
 1. Runs the test suite and build
-2. Creates a GitHub Release
+2. Creates a GitHub Release whose body is only that version's section of `CHANGELOG.md`
 3. Moves the major tag (`v1` for a `v1.x.y` release) to that commit
-4. Publishes `@leon-pixel/mcp-health` to npm when the repository secret `NPM_TOKEN` is set
+4. Publishes `@leon-pixel/mcp-health` to npm with provenance
 
-`NPM_TOKEN` is an npm automation token that can publish the `@leon-pixel` scope. When the secret is absent, the workflow still cuts the GitHub Release and moves the major tag, and it skips npm publish.
+npm may hold the new version under Staged Packages until a maintainer approves it. Approval is what makes the version installable and moves the `latest` tag. The GitHub Release can exist before that approval.
 
-The action is not published to the GitHub Marketplace by this workflow. Marketplace listing is a separate step on the GitHub release page.
+### Trusted publishing
+
+The workflow requests `id-token: write` and tries npm trusted publishing (OIDC) first. `NPM_TOKEN` is the fallback when that is not configured.
+
+To switch this package off the token:
+
+1. Open `@leon-pixel/mcp-health` on npmjs.com and add a trusted publisher.
+2. Choose GitHub Actions. Organization or user: `leon-pixel`. Repository: `mcp-health`. Workflow filename: `release.yml`.
+3. Allow `npm publish` for that publisher. If the package only allows staged publishes, the workflow's `npm publish` will fail until direct publish is allowed, and the version still has to be approved in Staged Packages.
+4. Remove the `NPM_TOKEN` repository secret after a tag publishes without it.
+
+Provenance is requested with `--provenance`. Trusted publishing adds it on its own when the token is absent. The publish step installs npm 11 first, which is what trusted publishing requires.
 
 ## Tradeoffs
 
 - The default scan is offline, so it is safe in CI
 - `--probe` runs real processes. Do not point it at configs you do not trust
 - IDE `PATH` can differ from the PATH in CI or a terminal
-- `${input:…}` values are not prompted. They are reported as unresolved
+- `${input:…}` values are not prompted. They are a warning, because the editor prompts for them
 - SARIF upload is opt-in because many repositories do not have code scanning
 
 ## Roadmap

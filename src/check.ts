@@ -1,6 +1,7 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
 
@@ -95,10 +96,26 @@ function unresolvedTokens(value: string): string[] {
   return value.match(UNRESOLVED_VAR) ?? [];
 }
 
-function unresolvedVariableFinding(
-  server: ParsedServer,
-  file: string,
-): Finding | undefined {
+/** Cursor `disabled: true`, or Codex/Zed `enabled: false`. */
+export function isServerDisabled(server: ParsedServer): boolean {
+  return server.raw.disabled === true || server.raw.enabled === false;
+}
+
+/**
+ * Zed extension context servers have `source: "extension"`, or the untagged
+ * settings shape (a `settings` object and no command or URL). The extension
+ * launches the process. A custom server with only `env` is not this.
+ */
+export function isExtensionProvided(server: ParsedServer): boolean {
+  if (server.raw.source === "extension") return true;
+  if (server.raw.source === "custom") return false;
+  const settings = server.raw.settings;
+  const settingsObject =
+    settings !== null && typeof settings === "object" && !Array.isArray(settings);
+  return settingsObject && server.transport.kind === "unknown";
+}
+
+function collectUnresolved(server: ParsedServer): string[] {
   const hits: string[] = [];
   const add = (where: string, value: string) => {
     for (const token of unresolvedTokens(value)) {
@@ -126,12 +143,34 @@ function unresolvedVariableFinding(
       if (typeof value === "string") add(`headers.${key}`, value);
     }
   }
+  return hits;
+}
 
+export function serverHasUnresolved(server: ParsedServer): boolean {
+  return collectUnresolved(server).length > 0;
+}
+
+/** `${input:…}` and unset `${env:…}` are IDE or secret references, not typos. */
+function softUnresolved(token: string): boolean {
+  return /^\$\{input:/i.test(token) || /^\$\{env:/i.test(token);
+}
+
+function unresolvedVariableFinding(
+  server: ParsedServer,
+  file: string,
+  strict: boolean,
+): Finding | undefined {
+  const hits = collectUnresolved(server);
   if (hits.length === 0) return undefined;
+  const hard = hits.some((hit) => !softUnresolved(hit.slice(0, hit.indexOf(" in "))));
+  const severity: Severity = hard || strict ? "fail" : "warn";
+  const note = strict
+    ? " --strict-variables is set"
+    : " ${input:…} and unset ${env:…} are warnings; other ${…} tokens fail";
   return {
-    severity: "fail",
+    severity,
     code: "UNRESOLVED_VARIABLE",
-    message: `Unresolved config variable ${hits.join("; ")}. workspaceFolder, userHome, pathSeparator, and env are expanded; input and other variables are not`,
+    message: `Unresolved config variable ${hits.join("; ")}.${note}`,
     server: server.name,
     file,
   };
@@ -173,7 +212,10 @@ function worst(a: Severity, b: Severity): Severity {
   return rank[a] >= rank[b] ? a : b;
 }
 
-export function checkConfig(file: ConfigFile): {
+export function checkConfig(
+  file: ConfigFile,
+  options: { strictVariables?: boolean } = {},
+): {
   findings: Finding[];
   perServer: Map<string, { status: Severity; findings: Finding[] }>;
 } {
@@ -227,6 +269,32 @@ export function checkConfig(file: ConfigFile): {
     const local: Finding[] = [];
     let status: Severity = "ok";
 
+    if (isServerDisabled(server)) {
+      local.push({
+        severity: "ok",
+        code: "DISABLED",
+        message: "Disabled in config; not checked",
+        server: server.name,
+        file: file.path,
+      });
+      findings.push(...local);
+      perServer.set(server.name, { status: "ok", findings: local });
+      continue;
+    }
+
+    if (isExtensionProvided(server)) {
+      local.push({
+        severity: "ok",
+        code: "EXTENSION_SERVER",
+        message: "Extension-provided server; the extension launches it",
+        server: server.name,
+        file: file.path,
+      });
+      findings.push(...local);
+      perServer.set(server.name, { status: "ok", findings: local });
+      continue;
+    }
+
     if (!server.name.trim()) {
       local.push({
         severity: "fail",
@@ -237,7 +305,11 @@ export function checkConfig(file: ConfigFile): {
       });
     }
 
-    const unresolved = unresolvedVariableFinding(server, file.path);
+    const unresolved = unresolvedVariableFinding(
+      server,
+      file.path,
+      Boolean(options.strictVariables),
+    );
     if (unresolved) local.push(unresolved);
 
     if (server.transport.kind === "unknown") {
@@ -347,6 +419,27 @@ export function checkConfig(file: ConfigFile): {
             file: file.path,
           });
         }
+      }
+    }
+
+    const bearer = server.raw.bearerTokenEnvVar;
+    const authEnvNames: string[] = [];
+    if (typeof bearer === "string" && bearer.trim()) authEnvNames.push(bearer.trim());
+    const envHeaders = server.raw.envHttpHeaders;
+    if (envHeaders && typeof envHeaders === "object" && !Array.isArray(envHeaders)) {
+      for (const envName of Object.values(envHeaders)) {
+        if (typeof envName === "string" && envName.trim()) authEnvNames.push(envName.trim());
+      }
+    }
+    for (const envName of authEnvNames) {
+      if (lookupEnv(envName, process.env, process.platform) === undefined) {
+        local.push({
+          severity: "warn",
+          code: "AUTH_ENV_UNSET",
+          message: `Auth env ${envName} is not set`,
+          server: server.name,
+          file: file.path,
+        });
       }
     }
 

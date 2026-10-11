@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-10-10
+
+### Fixed
+
+- `${input:…}` and an unset `${env:NAME}` are warnings. Unknown `${…}` tokens still fail. `--strict-variables` fails on the warnings too. A probe is not started while a variable is unresolved.
+- Cursor `disabled: true` and Codex or Zed `enabled: false` are reported as disabled and are not checked.
+- An HTTP 401 or 403 with an OAuth `WWW-Authenticate` challenge is `PROBE_OAUTH`, a warning. The MCP client signs in. A 401 without that challenge is still a failure.
+- JSON configs accept comments and trailing commas.
+- Codex `bearer_token_env_var` and `env_http_headers` are sent on probes. A missing variable is `AUTH_ENV_UNSET` and the value is not printed.
+- Zed `"source": "extension"` servers are not `NO_TRANSPORT`.
+- Relative `-f` paths resolve from the current directory. A missing file is `FILE_NOT_FOUND`. A missing scan root is `ROOT_NOT_FOUND`. HTTP connection failures include the cause, such as `ECONNREFUSED`.
+- Summary `ok`, `warn`, and `fail` count servers only, so they add up. Skipped settings files are `skipped`.
+- The Action does not fail a job that only has `NO_CONFIG`, unless `fail-on-missing` is true.
+- Node.js 22.12 or newer is required, matching commander 15. CI, the release workflow, and the Action default use Node 22.
+
+### Changed
+
+- README and roadmap match the published package, the `v1` tag, and the Marketplace listing.
+- The release workflow publishes the current changelog section, requests `id-token: write`, and publishes with provenance. `NPM_TOKEN` remains the fallback when trusted publishing is not configured.
+- Workflows use `actions/checkout@v7`, `actions/setup-node@v7`, and `softprops/action-gh-release@v3`. The Action uses `actions/setup-node@v7` and `github/codeql-action/upload-sarif@v4`.
+
 ## [1.2.0] - 2026-10-10
 
 ### Added

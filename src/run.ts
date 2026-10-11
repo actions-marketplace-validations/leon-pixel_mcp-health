@@ -1,7 +1,14 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { discoverConfigPaths } from "./discover.js";
 import { configHasServers, isOptionalMcpFile, parseConfigFile } from "./parse.js";
-import { checkConfig, extractNpxPackage } from "./check.js";
+import {
+  checkConfig,
+  extractNpxPackage,
+  isExtensionProvided,
+  isServerDisabled,
+  serverHasUnresolved,
+} from "./check.js";
 import {
   fetchNpmLatest,
   isRangePin,
@@ -36,10 +43,43 @@ export type RunOptions = {
   probeTimeoutMs?: number;
   /** With probe, call tools/list. Defaults to true. */
   probeListTools?: boolean;
+  /** Treat ${input:…} and unset ${env:…} as failures. */
+  strictVariables?: boolean;
+  /** A scan that finds no config is ok instead of a warning. */
+  allowMissing?: boolean;
 };
+
+function emptyReport(
+  root: string,
+  row: ServerReport,
+): HealthReport {
+  return {
+    scannedAt: new Date().toISOString(),
+    root,
+    files: [],
+    servers: [row],
+    summary: { ok: 0, warn: 0, fail: 0, files: 0, servers: 0, skipped: 0 },
+  };
+}
 
 export async function runCheck(options: RunOptions): Promise<HealthReport> {
   const root = resolve(options.root);
+  if (!existsSync(root)) {
+    return emptyReport(root, {
+      name: "(scan)",
+      file: root,
+      transport: "unknown",
+      status: "fail",
+      findings: [
+        {
+          severity: "fail",
+          code: "ROOT_NOT_FOUND",
+          message: `Scan root does not exist: ${root}`,
+          file: root,
+        },
+      ],
+    });
+  }
   const paths =
     options.files && options.files.length > 0
       ? options.files.map((f) => resolve(root, f))
@@ -53,6 +93,23 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
 
   for (const path of paths) {
     files.push(path);
+    if (!existsSync(path)) {
+      servers.push({
+        name: "(file)",
+        file: path,
+        transport: "unknown",
+        status: "fail",
+        findings: [
+          {
+            severity: "fail",
+            code: "FILE_NOT_FOUND",
+            message: `Config file not found: ${path}`,
+            file: path,
+          },
+        ],
+      });
+      continue;
+    }
     let parsed;
     try {
       parsed = parseConfigFile(path);
@@ -83,7 +140,9 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       };
     }
 
-    const { perServer, findings } = checkConfig(parsed);
+    const { perServer, findings } = checkConfig(parsed, {
+      strictVariables: options.strictVariables,
+    });
 
     if (
       parsed.format === "none" ||
@@ -202,15 +261,28 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
         }
       }
 
-      if (options.probe && result.status !== "fail") {
-        const probed = await probeServer(server, {
-          timeoutMs: probeTimeoutMs,
-          file: path,
-          cwd: root,
-          listTools: options.probeListTools !== false,
-        });
-        result.findings.push(...probed.findings);
-        result.status = worst(result.status, probed.status);
+      const leaveUnprobed =
+        isServerDisabled(server) || isExtensionProvided(server);
+      if (options.probe && result.status !== "fail" && !leaveUnprobed) {
+        if (serverHasUnresolved(server)) {
+          result.findings.push({
+            severity: "warn",
+            code: "PROBE_SKIPPED",
+            message: "Skipped probe because a config variable is unresolved",
+            server: server.name,
+            file: path,
+          });
+          result.status = worst(result.status, "warn");
+        } else {
+          const probed = await probeServer(server, {
+            timeoutMs: probeTimeoutMs,
+            file: path,
+            cwd: root,
+            listTools: options.probeListTools !== false,
+          });
+          result.findings.push(...probed.findings);
+          result.status = worst(result.status, probed.status);
+        }
       } else if (options.probe && result.status === "fail") {
         result.findings.push({
           severity: "warn",
@@ -237,14 +309,15 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
   }
 
   if (files.length === 0) {
+    const severity: Severity = options.allowMissing ? "ok" : "warn";
     servers.push({
       name: "(scan)",
       file: root,
       transport: "unknown",
-      status: "warn",
+      status: severity,
       findings: [
         {
-          severity: "warn",
+          severity,
           code: "NO_CONFIG",
           message:
             "No MCP config files found (Cursor, VS Code, Claude, Windsurf, Zed, or Codex project or user paths)",
@@ -254,17 +327,21 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
     });
   }
 
+  const real = servers.filter((server) => !server.name.startsWith("("));
   const summary = {
     ok: 0,
     warn: 0,
     fail: 0,
     files: files.length,
-    servers: servers.filter((s) => !s.name.startsWith("(")).length,
+    servers: real.length,
+    skipped: servers.filter((server) =>
+      server.findings.some((finding) => finding.code === "SKIPPED_NO_MCP"),
+    ).length,
   };
 
-  for (const s of servers) {
-    if (s.status === "ok") summary.ok += 1;
-    else if (s.status === "warn") summary.warn += 1;
+  for (const server of real) {
+    if (server.status === "ok") summary.ok += 1;
+    else if (server.status === "warn") summary.warn += 1;
     else summary.fail += 1;
   }
 

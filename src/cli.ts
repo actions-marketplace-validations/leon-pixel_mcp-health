@@ -49,6 +49,16 @@ program
     "Print GitHub Actions annotations on stderr",
     false,
   )
+  .option(
+    "--strict-variables",
+    "Fail on ${input:…} and unset ${env:…} instead of warning",
+    false,
+  )
+  .option(
+    "--allow-missing",
+    "Exit 0 when no MCP config file is found",
+    false,
+  )
   .action(
     async (
       root: string,
@@ -62,16 +72,22 @@ program
         tools?: boolean;
         sarif?: string;
         githubAnnotations?: boolean;
+        strictVariables?: boolean;
+        allowMissing?: boolean;
       },
     ) => {
       const report = await runCheck({
         root,
-        files: opts.file.length ? opts.file : undefined,
+        files: opts.file.length
+          ? opts.file.map((file) => resolve(process.cwd(), file))
+          : undefined,
         includeUserConfig: opts.user !== false,
         online: Boolean(opts.online),
         probe: Boolean(opts.probe),
         probeTimeoutMs: opts.probeTimeout,
         probeListTools: opts.tools !== false,
+        strictVariables: Boolean(opts.strictVariables),
+        allowMissing: Boolean(opts.allowMissing),
       });
 
       if (opts.sarif) {
