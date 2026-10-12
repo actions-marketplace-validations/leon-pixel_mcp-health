@@ -74,7 +74,15 @@ describe("buildSarif", () => {
       scannedAt: "2026-10-10T00:00:00.000Z",
       root: scanRoot,
       files: [file],
-      summary: { ok: 0, warn: 0, fail: 1, files: 1, servers: 1, skipped: 0 },
+      summary: {
+        ok: 0,
+        warn: 0,
+        fail: 1,
+        files: 1,
+        servers: 1,
+        skipped: 0,
+        configWarnings: 0,
+      },
       servers: [
         {
           name: "odd",

@@ -13,6 +13,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - README shows a monorepo `path`, `fail-on-missing`, a full SARIF upload workflow, and husky, lefthook, and pre-commit snippets.
 - `--no-user` help text names every user-level client it skips.
 
+### Fixed
+
+- An empty server map still exits 1, and the summary line says that config-level warning is why. Server counts still add up. `NO_CONFIG` is unchanged.
+- `--probe-timeout` must be a positive number of milliseconds. A non-numeric, zero, or negative value exits before a probe starts. The default stays 8000.
+- On Windows, the user-level scan includes the Claude Desktop MSIX config `%LOCALAPPDATA%/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json` when that file exists, along with `%APPDATA%/Claude/claude_desktop_config.json`.
+
 ## [1.2.1] - 2026-10-10
 
 ### Fixed

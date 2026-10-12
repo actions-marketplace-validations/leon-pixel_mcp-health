@@ -174,7 +174,7 @@ A Codex `config.toml` or a settings file with no MCP section is skipped. It is n
 
 - Cursor `~/.cursor/mcp.json`
 - Claude Code `~/.claude/settings.json`
-- Claude Desktop `claude_desktop_config.json`
+- Claude Desktop `claude_desktop_config.json` under `~/Library/Application Support/Claude/` on macOS, or `~/.config/Claude/` on Linux. On Windows, `%APPDATA%/Claude/claude_desktop_config.json` and, when that file exists, the MSIX path `%LOCALAPPDATA%/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json`
 - Windsurf `~/.codeium/windsurf/mcp_config.json`
 - Devin Desktop `mcp_config.json` under `$XDG_CONFIG_HOME/devin/` (default `~/.config/devin/`), or `%APPDATA%/devin/` on Windows
 - Zed `settings.json` under `$XDG_CONFIG_HOME/zed/` on Linux, plus `~/Library/Application Support/Zed/settings.json` and `~/.config/zed/settings.json` on macOS, or `%APPDATA%/Zed/settings.json` on Windows

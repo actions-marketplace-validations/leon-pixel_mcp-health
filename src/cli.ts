@@ -1,13 +1,24 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { runCheck } from "./run.js";
 import { exitCode, formatHuman, formatJson } from "./report.js";
 import { buildSarif, formatAnnotations } from "./sarif.js";
 import { VERSION } from "./version.js";
 
 const program = new Command();
+
+/** Positive milliseconds. Rejects NaN, zero, and negatives before a probe can start. */
+function parseProbeTimeout(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError(
+      "--probe-timeout value must be a positive number of milliseconds",
+    );
+  }
+  return parsed;
+}
 
 program
   .name("mcp-health")
@@ -39,7 +50,7 @@ program
   .option(
     "--probe-timeout <ms>",
     "Probe timeout in milliseconds",
-    (v) => Number(v),
+    parseProbeTimeout,
     8000,
   )
   .option("--no-tools", "With --probe, skip tools/list")

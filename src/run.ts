@@ -16,6 +16,7 @@ import {
   splitPackageSpec,
 } from "./npm.js";
 import { probeServer, worst } from "./probe.js";
+import { configWarningFindings } from "./report.js";
 import { expandServerVariables } from "./vars.js";
 import type {
   Finding,
@@ -58,7 +59,15 @@ function emptyReport(
     root,
     files: [],
     servers: [row],
-    summary: { ok: 0, warn: 0, fail: 0, files: 0, servers: 0, skipped: 0 },
+    summary: {
+      ok: 0,
+      warn: 0,
+      fail: 0,
+      files: 0,
+      servers: 0,
+      skipped: 0,
+      configWarnings: 0,
+    },
   };
 }
 
@@ -337,6 +346,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
     skipped: servers.filter((server) =>
       server.findings.some((finding) => finding.code === "SKIPPED_NO_MCP"),
     ).length,
+    configWarnings: configWarningFindings(servers).length,
   };
 
   for (const server of real) {

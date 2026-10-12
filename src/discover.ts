@@ -14,17 +14,53 @@ const PROJECT_CANDIDATES = [
   ".codex/config.toml",
 ] as const;
 
-function claudeDesktopPaths(): string[] {
-  const home = homedir();
-  const p = platform();
+/** Package-family name of the official Claude Desktop MSIX install. */
+const CLAUDE_DESKTOP_MSIX_FAMILY = "Claude_pzs8sxrjxfjjc";
+
+export type LocateOptions = {
+  platform?: NodeJS.Platform;
+  home?: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+function locate(options: LocateOptions = {}): {
+  platform: NodeJS.Platform;
+  home: string;
+  env: NodeJS.ProcessEnv;
+} {
+  return {
+    platform: options.platform ?? platform(),
+    home: options.home ?? homedir(),
+    env: options.env ?? process.env,
+  };
+}
+
+function claudeDesktopPaths(options: LocateOptions = {}): string[] {
+  const { platform: p, home, env } = locate(options);
   if (p === "darwin") {
     return [
       join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
     ];
   }
   if (p === "win32") {
-    const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
-    return [join(appData, "Claude", "claude_desktop_config.json")];
+    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    const paths = [join(appData, "Claude", "claude_desktop_config.json")];
+    // The MSIX build reads a virtualized Roaming file. Skip it when LOCALAPPDATA is unset.
+    const localAppData = env.LOCALAPPDATA;
+    if (localAppData) {
+      paths.push(
+        join(
+          localAppData,
+          "Packages",
+          CLAUDE_DESKTOP_MSIX_FAMILY,
+          "LocalCache",
+          "Roaming",
+          "Claude",
+          "claude_desktop_config.json",
+        ),
+      );
+    }
+    return paths;
   }
   // linux + others
   return [
@@ -32,50 +68,50 @@ function claudeDesktopPaths(): string[] {
   ];
 }
 
-function windsurfUserPaths(): string[] {
-  const home = homedir();
+function windsurfUserPaths(options: LocateOptions = {}): string[] {
+  const { platform: p, home, env } = locate(options);
   const paths = [join(home, ".codeium", "windsurf", "mcp_config.json")];
-  if (platform() === "win32") {
-    const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
+  if (p === "win32") {
+    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
     paths.push(join(appData, "devin", "mcp_config.json"));
   } else {
-    const xdg = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+    const xdg = env.XDG_CONFIG_HOME ?? join(home, ".config");
     paths.push(join(xdg, "devin", "mcp_config.json"));
   }
   return paths;
 }
 
-function zedUserPaths(): string[] {
-  const home = homedir();
-  if (platform() === "win32") {
-    const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
+function zedUserPaths(options: LocateOptions = {}): string[] {
+  const { platform: p, home, env } = locate(options);
+  if (p === "win32") {
+    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
     return [join(appData, "Zed", "settings.json")];
   }
-  if (platform() === "darwin") {
+  if (p === "darwin") {
     return [
       join(home, "Library", "Application Support", "Zed", "settings.json"),
       join(home, ".config", "zed", "settings.json"),
     ];
   }
-  const xdg = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+  const xdg = env.XDG_CONFIG_HOME ?? join(home, ".config");
   return [join(xdg, "zed", "settings.json")];
 }
 
-function userLevelPaths(): string[] {
-  const home = homedir();
+function userLevelPaths(options: LocateOptions = {}): string[] {
+  const { home } = locate(options);
   return [
     join(home, ".cursor", "mcp.json"),
     join(home, ".claude", "settings.json"),
-    ...claudeDesktopPaths(),
-    ...windsurfUserPaths(),
-    ...zedUserPaths(),
+    ...claudeDesktopPaths(options),
+    ...windsurfUserPaths(options),
+    ...zedUserPaths(options),
     join(home, ".codex", "config.toml"),
   ];
 }
 
 export function discoverConfigPaths(
   root: string,
-  options: { includeUserConfig?: boolean } = {},
+  options: { includeUserConfig?: boolean } & LocateOptions = {},
 ): string[] {
   const absRoot = resolve(root);
   const found = new Set<string>();
@@ -86,7 +122,7 @@ export function discoverConfigPaths(
   }
 
   if (options.includeUserConfig !== false) {
-    for (const full of userLevelPaths()) {
+    for (const full of userLevelPaths(options)) {
       if (existsSync(full)) found.add(full);
     }
   }
