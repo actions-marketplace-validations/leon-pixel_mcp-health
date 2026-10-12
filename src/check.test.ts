@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { resolve, dirname, join } from "node:path";
@@ -11,13 +12,14 @@ import {
 } from "./check.js";
 import { parseConfigFile } from "./parse.js";
 import { omitStaleHealthy, runCheck } from "./run.js";
-import { exitCode } from "./report.js";
+import { exitCode, formatHuman } from "./report.js";
 import { splitPackageSpec, isRangePin, isVersionDrift } from "./npm.js";
 import { discoverConfigPaths, __testing } from "./discover.js";
 import { expandString } from "./vars.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const fixtures = resolve(here, "..", "fixtures");
+const repo = resolve(here, "..");
+const fixtures = join(repo, "fixtures");
 
 describe("isVersionPinned", () => {
   it("detects pinned and unpinned packages", () => {
@@ -110,6 +112,76 @@ describe("discoverConfigPaths", () => {
       ).toEqual([]);
     } finally {
       rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("adds the Windows MSIX Claude Desktop config only when that file exists", () => {
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-msix-"));
+    const appData = join(home, "AppData", "Roaming");
+    const localAppData = join(home, "AppData", "Local");
+    const documented = join(appData, "Claude", "claude_desktop_config.json");
+    const msix = join(
+      localAppData,
+      "Packages",
+      "Claude_pzs8sxrjxfjjc",
+      "LocalCache",
+      "Roaming",
+      "Claude",
+      "claude_desktop_config.json",
+    );
+    const win32 = {
+      platform: "win32" as const,
+      home,
+      env: { APPDATA: appData, LOCALAPPDATA: localAppData },
+    };
+    try {
+      expect(__testing.claudeDesktopPaths(win32)).toEqual([documented, msix]);
+      expect(__testing.userLevelPaths(win32)).toEqual(
+        expect.arrayContaining([documented, msix]),
+      );
+      expect(discoverConfigPaths(home, win32)).not.toContain(msix);
+      expect(discoverConfigPaths(home, win32)).not.toContain(documented);
+
+      mkdirSync(dirname(msix), { recursive: true });
+      writeFileSync(msix, "{}\n");
+      const msixOnly = discoverConfigPaths(home, win32);
+      expect(msixOnly).toContain(msix);
+      expect(msixOnly).not.toContain(documented);
+
+      mkdirSync(dirname(documented), { recursive: true });
+      writeFileSync(documented, "{}\n");
+      const both = discoverConfigPaths(home, win32);
+      expect(both).toContain(documented);
+      expect(both).toContain(msix);
+
+      const noLocal = { ...win32, env: { APPDATA: appData } };
+      expect(__testing.claudeDesktopPaths(noLocal)).toEqual([documented]);
+      const withoutLocal = discoverConfigPaths(home, noLocal);
+      expect(withoutLocal).toContain(documented);
+      expect(withoutLocal.some((p) => p.includes("Claude_pzs8sxrjxfjjc"))).toBe(
+        false,
+      );
+
+      expect(
+        discoverConfigPaths(home, { ...win32, includeUserConfig: false }),
+      ).toEqual([]);
+
+      expect(
+        __testing.claudeDesktopPaths({ platform: "win32", home, env: {} }),
+      ).toEqual([
+        join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json"),
+      ]);
+      expect(
+        __testing
+          .claudeDesktopPaths({
+            platform: "linux",
+            home,
+            env: { LOCALAPPDATA: localAppData },
+          })
+          .some((p) => p.includes("Claude_pzs8sxrjxfjjc")),
+      ).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
@@ -566,6 +638,10 @@ describe("audit fixes", () => {
       expect(warned.servers[0]?.status).toBe("warn");
       expect(exitCode(warned)).toBe(1);
       expect(warned.summary.servers).toBe(0);
+      expect(warned.summary.configWarnings).toBe(0);
+      const warnedHeader = formatHuman(warned).split("\n")[1] ?? "";
+      expect(warnedHeader).toContain("warn: 0");
+      expect(warnedHeader).not.toContain("config-level warning");
 
       const allowed = await runCheck({
         root: dir,
@@ -578,6 +654,101 @@ describe("audit fixes", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("exits 1 for an empty server map and says so in the summary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-empty-map-"));
+    try {
+      writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: {} }));
+      const report = await runCheck({ root: dir, includeUserConfig: false });
+      expect(report.summary).toMatchObject({
+        ok: 0,
+        warn: 0,
+        fail: 0,
+        files: 1,
+        servers: 0,
+        skipped: 0,
+        configWarnings: 1,
+      });
+      expect(report.summary.ok + report.summary.warn + report.summary.fail).toBe(
+        report.summary.servers,
+      );
+      expect(report.servers.map((server) => server.name)).toEqual(["(config)"]);
+      expect(report.servers[0]?.findings.map((finding) => finding.code)).toEqual([
+        "EMPTY_SERVERS",
+      ]);
+      expect(exitCode(report)).toBe(1);
+      const header = formatHuman(report).split("\n")[1] ?? "";
+      expect(header).toContain("servers: 0");
+      expect(header).toContain("warn: 0");
+      expect(header).toContain(
+        "exit 1 because of a config-level warning (EMPTY_SERVERS)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("--probe-timeout", () => {
+  const tsx = join(repo, "node_modules", ".bin", "tsx");
+
+  function runCli(args: string[], cwd = repo) {
+    return spawnSync(tsx, [join(repo, "src", "cli.ts"), ...args], {
+      encoding: "utf8",
+      cwd,
+    });
+  }
+
+  it("rejects non-numeric and non-positive values before spawning a server", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-timeout-"));
+    const marker = join(dir, "spawned");
+    const script = join(dir, "server.mjs");
+    writeFileSync(
+      script,
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "spawned\\n");\n`,
+    );
+    writeFileSync(
+      join(dir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: { local: { command: "node", args: [script] } },
+      }),
+    );
+    try {
+      for (const value of ["foo", "0", "-5"]) {
+        const result = runCli(
+          ["check", "--no-user", "--probe", "--probe-timeout", value, dir],
+          dir,
+        );
+        expect(result.status, value).toBeGreaterThan(0);
+        expect(result.stderr, value).toContain("--probe-timeout");
+        expect(result.stderr, value).toContain(
+          "value must be a positive number of milliseconds",
+        );
+        expect(result.stdout, value).not.toContain("mcp-health — scanned");
+        expect(existsSync(marker), value).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the default of 8000 and still probes with 4000", () => {
+    const help = runCli(["check", "--help"]);
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("--probe-timeout <ms>");
+    expect(help.stdout).toContain("(default: 8000)");
+
+    const probed = runCli([
+      "check",
+      "--no-user",
+      "--probe",
+      "--probe-timeout",
+      "4000",
+      "fixtures/probe-ok",
+    ]);
+    expect(probed.status).toBe(0);
+    expect(probed.stdout).toContain("PROBE_OK");
   });
 });
 

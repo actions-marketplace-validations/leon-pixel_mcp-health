@@ -41,9 +41,6 @@ Still open, in the order a first-time user hits them:
 
 1. Claude Code user and per-project servers live in `~/.claude.json`, which is not scanned (#41).
 2. Continue (`.continue/mcpServers` and `config.yaml`, #42), Junie (`.junie/mcp/mcp.json`, #43), and Cline (`~/.cline/data/settings/cline_mcp_settings.json`, #44).
-3. An empty server map exits 1 while the summary line says `warn: 0` (#45).
-4. `--probe-timeout foo` fails the probe immediately instead of rejecting the flag (#46).
-5. The Windows MSIX Claude Desktop config path (#47).
 
 ## Out of scope
 

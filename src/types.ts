@@ -55,5 +55,10 @@ export type HealthReport = {
     servers: number;
     /** Settings files with no MCP section. Not included in ok/warn/fail. */
     skipped: number;
+    /**
+     * Warnings on a config file that are not server rows, such as EMPTY_SERVERS.
+     * Not included in `warn`, so `ok + warn + fail` still equals `servers`.
+     */
+    configWarnings: number;
   };
 };
