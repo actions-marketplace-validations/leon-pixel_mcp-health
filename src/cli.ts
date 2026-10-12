@@ -22,7 +22,10 @@ program
   .argument("[root]", "Project root to scan", ".")
   .option("-f, --file <path>", "Specific config file (repeatable)", collect, [])
   .option("--json", "Print JSON report", false)
-  .option("--no-user", "Ignore user-level Cursor/Claude Desktop configs")
+  .option(
+    "--no-user",
+    "Skip user-level configs (Cursor, Claude Code, Claude Desktop, Windsurf, Devin, Zed, and Codex)",
+  )
   .option(
     "--online",
     "Query npm registry for package drift (network required)",

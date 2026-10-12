@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- README states that npm `latest` and the `v1` Action tag track 1.2.1.
+- README shows a monorepo `path`, `fail-on-missing`, a full SARIF upload workflow, and husky, lefthook, and pre-commit snippets.
+- `--no-user` help text names every user-level client it skips.
+
 ## [1.2.1] - 2026-10-10
 
 ### Fixed
