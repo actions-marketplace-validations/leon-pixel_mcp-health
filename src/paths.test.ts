@@ -63,6 +63,55 @@ describe("changelogSection", () => {
   });
 });
 
+describe("readme release lines", () => {
+  it("names the package version as npm latest and the v1 track", () => {
+    const pkg = require("../package.json") as { version: string };
+    const readme = readFileSync(join(repo, "README.md"), "utf8");
+    expect(readme).toContain(
+      `It currently tracks the published ${pkg.version} release`,
+    );
+    expect(readme).toContain(
+      `\`@leon-pixel/mcp-health@${pkg.version}\` is the current npm \`latest\`.`,
+    );
+    expect(readme).toContain("path: services/api");
+    expect(readme).toContain("fail-on-missing: true");
+    expect(readme).toContain("upload-sarif: true");
+    expect(readme).toContain("security-events: write");
+    expect(readme).toContain(
+      "npx --yes @leon-pixel/mcp-health check --no-user",
+    );
+    expect(readme).toContain("pass_filenames: false");
+    expect(readme).not.toContain("tracks the published 1.2.0 release");
+    expect(readme).not.toContain(
+      "`@leon-pixel/mcp-health@1.2.0` is the current npm `latest`",
+    );
+  });
+});
+
+describe("--no-user help", () => {
+  it("names every user-level client the flag skips", () => {
+    const tsx = join(repo, "node_modules", ".bin", "tsx");
+    const result = spawnSync(
+      tsx,
+      [join(repo, "src", "cli.ts"), "check", "--help"],
+      { encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    const help = result.stdout.replace(/\s+/g, " ");
+    for (const client of [
+      "Cursor",
+      "Claude Code",
+      "Claude Desktop",
+      "Windsurf",
+      "Devin",
+      "Zed",
+      "Codex",
+    ]) {
+      expect(help).toContain(client);
+    }
+  });
+});
+
 describe("engines", () => {
   it("declares a Node range that satisfies commander", () => {
     const ours = require("../package.json") as { engines: { node: string } };

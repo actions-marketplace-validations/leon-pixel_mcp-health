@@ -35,7 +35,15 @@ Patch release on top of the published 1.2.0 package. IDE input variables and dis
 
 ## Next
 
-No scheduled feature. Publish a patch by tagging `v1.2.1` after this branch is merged, then approve it in npm Staged Packages if npm holds the version.
+1.2.1 is published. npm `latest` and the `v1` Action tag track that release. Nothing is waiting on a tag.
+
+Still open, in the order a first-time user hits them:
+
+1. Claude Code user and per-project servers live in `~/.claude.json`, which is not scanned (#41).
+2. Continue (`.continue/mcpServers` and `config.yaml`, #42), Junie (`.junie/mcp/mcp.json`, #43), and Cline (`~/.cline/data/settings/cline_mcp_settings.json`, #44).
+3. An empty server map exits 1 while the summary line says `warn: 0` (#45).
+4. `--probe-timeout foo` fails the probe immediately instead of rejecting the flag (#46).
+5. The Windows MSIX Claude Desktop config path (#47).
 
 ## Out of scope
 

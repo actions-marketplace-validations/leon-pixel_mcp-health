@@ -73,31 +73,87 @@ jobs:
           args: --no-user
 ```
 
-`v1` is a moving tag. The [release workflow](.github/workflows/release.yml) points it at the latest stable `v1.x.y` release. It currently tracks the published 1.2.0 release and moves again when a newer stable tag is pushed.
+`v1` is a moving tag. The [release workflow](.github/workflows/release.yml) points it at the latest stable `v1.x.y` release. It currently tracks the published 1.2.1 release and moves again when a newer stable tag is pushed.
 
 The action is listed on the Marketplace as [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor). `uses: leon-pixel/mcp-health@v1` installs that listing.
+
+`path` is the scan root, relative to the job workspace. In a monorepo, point it at the package that holds the MCP config. Other packages are not scanned.
+
+```yaml
+- uses: leon-pixel/mcp-health@v1
+  with:
+    path: services/api
+    args: --no-user
+```
+
+A repository with no MCP config is `NO_CONFIG`. That warning does not fail the job unless `fail-on-missing` is `true`. Leave the default (`false`) for a repo that may have no MCP config. Set it when that directory is supposed to contain one:
+
+```yaml
+- uses: leon-pixel/mcp-health@v1
+  with:
+    path: services/api
+    args: --no-user
+    fail-on-missing: true
+```
 
 Annotations are on by default (`::error` and `::warning` in the job log). A SARIF 2.1.0 file is written to `mcp-health.sarif` unless `sarif-file` is `false`. Uploading that file to code scanning is off unless you opt in. The upload needs `security-events: write` on the job, and the repository has to have code scanning enabled.
 
 ```yaml
-permissions:
-  contents: read
-  security-events: write
-steps:
-  - uses: actions/checkout@v5
-  - uses: leon-pixel/mcp-health@v1
-    with:
-      args: --no-user
-      annotations: true
-      sarif-file: mcp-health.sarif
-      upload-sarif: true
+name: mcp-health
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leon-pixel/mcp-health@v1
+        with:
+          args: --no-user
+          annotations: true
+          sarif-file: mcp-health.sarif
+          upload-sarif: true
 ```
 
 The check step itself exits 0 so the upload can still run after findings. A following step exits with the real mcp-health code, so the job still fails on warnings and failures. The `exit-code` output is that code (`0`, `1`, or `2`).
 
-A repository with no MCP config is `NO_CONFIG`. That warning does not fail the job unless `fail-on-missing` is `true`.
-
 Optional `args`: `--online`, `--probe`, `--no-tools`, `--strict-variables`, `--probe-timeout 8000`, `--json`.
+
+## Gate a commit
+
+`check --no-user` does not start servers and does not read user-level configs. Warnings exit 1, so a hook fails on an unpinned package as well as a missing command.
+
+husky, in `.husky/pre-commit`:
+
+```sh
+npx --yes @leon-pixel/mcp-health check --no-user
+```
+
+lefthook, in `lefthook.yml`:
+
+```yaml
+pre-commit:
+  commands:
+    mcp-health:
+      run: npx --yes @leon-pixel/mcp-health check --no-user
+```
+
+pre-commit, in `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: mcp-health
+        name: mcp-health
+        entry: npx --yes @leon-pixel/mcp-health check --no-user
+        language: system
+        pass_filenames: false
+```
+
+`npx` needs Node.js 22.12 or newer on `PATH`. `pass_filenames: false` matters because the hook checks the repo, not the staged file list.
 
 ## What it scans
 
@@ -155,7 +211,7 @@ mcp-health reads the MCP config files already in a repo (and, unless you pass `-
 
 ## Releases
 
-`@leon-pixel/mcp-health@1.2.0` is the current npm `latest`. The Marketplace listing is [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor).
+`@leon-pixel/mcp-health@1.2.1` is the current npm `latest`. The Marketplace listing is [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor).
 
 Pushing a stable tag `vX.Y.Z` that matches `version` in `package.json` runs [`.github/workflows/release.yml`](.github/workflows/release.yml). That workflow:
 
