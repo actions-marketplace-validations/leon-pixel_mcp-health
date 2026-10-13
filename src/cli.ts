@@ -35,7 +35,7 @@ program
   .option("--json", "Print JSON report", false)
   .option(
     "--no-user",
-    "Skip user-level configs (Cursor, Claude Code, Claude Desktop, Windsurf, Devin, Zed, and Codex)",
+    "Skip user-level configs (Cursor, Claude Code, Claude Desktop, Continue, Junie, Cline, Windsurf, Devin, Zed, and Codex)",
   )
   .option(
     "--online",

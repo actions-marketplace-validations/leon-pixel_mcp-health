@@ -33,14 +33,17 @@ It is not a registry UI and not a hosted dashboard. It is a config scan plus an 
 
 Patch release on top of the published 1.2.0 package. IDE input variables and disabled servers no longer fail a scan. OAuth remotes, JSONC configs, Codex auth env vars, and Zed extension servers are recognized. The Action ignores a repository with no MCP config unless asked not to. Node 22.12 is the minimum.
 
+## Shipped in 1.3.0
+
+| # | Capability | Status |
+|---|------------|--------|
+| 1 | Claude Code user and per-project servers in `~/.claude.json` | Shipped |
+| 2 | Continue (`.continue/mcpServers` and `config.yaml`), Junie (`.junie/mcp/mcp.json`), and Cline (`~/.cline/data/settings/cline_mcp_settings.json`) | Shipped |
+| 3 | Empty server map still exits 1, `--probe-timeout` rejects non-positive values, and the Windows Claude Desktop MSIX config is scanned | Shipped |
+
 ## Next
 
-1.2.1 is published. npm `latest` and the `v1` Action tag track that release. Nothing is waiting on a tag.
-
-Still open, in the order a first-time user hits them:
-
-1. Claude Code user and per-project servers live in `~/.claude.json`, which is not scanned (#41).
-2. Continue (`.continue/mcpServers` and `config.yaml`, #42), Junie (`.junie/mcp/mcp.json`, #43), and Cline (`~/.cline/data/settings/cline_mcp_settings.json`, #44).
+`1.3.0` is in `package.json` and is not published yet. npm `latest` and the `v1` Action tag still track the published 1.2.1 release until the tag `v1.3.0` is pushed.
 
 ## Out of scope
 

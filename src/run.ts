@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { discoverConfigPaths } from "./discover.js";
+import { discoverConfigPaths, type LocateOptions } from "./discover.js";
 import { configHasServers, isOptionalMcpFile, parseConfigFile } from "./parse.js";
 import {
   checkConfig,
@@ -48,7 +48,7 @@ export type RunOptions = {
   strictVariables?: boolean;
   /** A scan that finds no config is ok instead of a warning. */
   allowMissing?: boolean;
-};
+} & LocateOptions;
 
 function emptyReport(
   root: string,
@@ -94,6 +94,9 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       ? options.files.map((f) => resolve(root, f))
       : discoverConfigPaths(root, {
           includeUserConfig: options.includeUserConfig,
+          platform: options.platform,
+          home: options.home,
+          env: options.env,
         });
 
   const servers: ServerReport[] = [];
@@ -121,7 +124,10 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
     }
     let parsed;
     try {
-      parsed = parseConfigFile(path);
+      parsed = parseConfigFile(path, {
+        root,
+        platform: options.platform,
+      });
     } catch (err) {
       servers.push({
         name: "(file)",
@@ -329,7 +335,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
           severity,
           code: "NO_CONFIG",
           message:
-            "No MCP config files found (Cursor, VS Code, Claude, Windsurf, Zed, or Codex project or user paths)",
+            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Windsurf, Zed, or Codex project or user paths)",
           file: root,
         },
       ],

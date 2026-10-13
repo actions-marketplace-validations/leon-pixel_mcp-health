@@ -1,0 +1,9 @@
+name: Browser tools
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: browser
+    command: npx
+    args:
+      - "-y"
+      - some-continue-mcp

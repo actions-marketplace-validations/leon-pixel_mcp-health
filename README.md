@@ -164,16 +164,22 @@ repos:
 | Cursor | `.cursor/mcp.json`, `mcp.json`, `.mcp.json` | `mcpServers` |
 | VS Code | `.vscode/mcp.json` | `servers` |
 | Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | `mcpServers` |
+| Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |
+| Junie | `.junie/mcp/mcp.json` | `mcpServers` |
 | Windsurf | `.windsurf/mcp_config.json` | `mcpServers`. Remote URLs may be `serverUrl` or `url` |
 | Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }`. `"source": "extension"` is an extension server. Comments and trailing commas are allowed |
 | Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `url`, `env`, `http_headers`, `bearer_token_env_var`, `env_http_headers`, `enabled` |
 
-A Codex `config.toml` or a settings file with no MCP section is skipped. It is not a failed scan.
+A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, or a settings file with no MCP section is skipped. It is not a failed scan.
 
 **User-level** (disable with `--no-user`):
 
 - Cursor `~/.cursor/mcp.json`
 - Claude Code `~/.claude/settings.json`
+- Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
+- Continue `~/.continue/config.yaml` (`mcpServers` list)
+- Junie `~/.junie/mcp/mcp.json`
+- Cline `~/.cline/data/settings/cline_mcp_settings.json`. `CLINE_MCP_SETTINGS_PATH` replaces that file. When it is unset, `CLINE_DATA_DIR` reads `<CLINE_DATA_DIR>/settings/cline_mcp_settings.json`
 - Claude Desktop `claude_desktop_config.json` under `~/Library/Application Support/Claude/` on macOS, or `~/.config/Claude/` on Linux. On Windows, `%APPDATA%/Claude/claude_desktop_config.json` and, when that file exists, the MSIX path `%LOCALAPPDATA%/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json`
 - Windsurf `~/.codeium/windsurf/mcp_config.json`
 - Devin Desktop `mcp_config.json` under `$XDG_CONFIG_HOME/devin/` (default `~/.config/devin/`), or `%APPDATA%/devin/` on Windows
@@ -182,7 +188,7 @@ A Codex `config.toml` or a settings file with no MCP section is skipped. It is n
 
 ## Checks
 
-- Offline: JSON and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders
+- Offline: JSON, YAML, and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders
 - Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, and a set `${env:NAME}` are expanded. `${input:…}` and an unset `${env:NAME}` are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. `--strict-variables` fails on the warnings too. Values are never printed
 - `disabled: true` (Cursor) and `enabled: false` (Codex, Zed) are reported as disabled and are not checked
 - Zed `"source": "extension"` is an extension-provided server. It is not a missing command
@@ -196,7 +202,7 @@ The initialize request uses protocol revision `2025-11-25`. If the server reject
 
 mcp-health reads the MCP config files already in a repo (and, unless you pass `--no-user`, the user-level files above) and reports whether those entries will load: missing commands, bad URLs, unpinned packages, optional registry drift, and an optional handshake that includes `tools/list`. The GitHub Action is the CI form of that scan, with annotations and SARIF.
 
-[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Windsurf, Zed, or Codex config files.
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Windsurf, Zed, or Codex config files.
 
 [MCP Doctor](https://mcpdoctor.ai/) (`npx mcpdoctor test …`) grades one server command against the MCP spec. [mcp-healthcheck](https://github.com/SiluPanda/mcp-healthcheck) is a liveness probe for one server URL or stdio command, including Kubernetes-style checks. mcp-health does not call tools, score spec compliance, or watch a running server. It checks the configs an agent will load.
 
@@ -211,7 +217,7 @@ mcp-health reads the MCP config files already in a repo (and, unless you pass `-
 
 ## Releases
 
-`@leon-pixel/mcp-health@1.2.1` is the current npm `latest`. The Marketplace listing is [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor).
+`@leon-pixel/mcp-health@1.2.1` is the current npm `latest`. The Marketplace listing is [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor). This repository is `1.3.0` in `package.json`. Pushing the tag `v1.3.0` publishes that version and moves `v1`.
 
 Pushing a stable tag `vX.Y.Z` that matches `version` in `package.json` runs [`.github/workflows/release.yml`](.github/workflows/release.yml). That workflow:
 
