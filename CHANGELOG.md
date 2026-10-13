@@ -7,11 +7,21 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-13
+
+### Added
+
+- Discover Claude Code user and local servers in `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for the scan root only. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` selects the directory. On Windows the file is `%USERPROFILE%\.claude.json`. `--no-user` skips the file, including the per-project entry. A file with no servers for this root is skipped, not `NO_MCP_SECTION`. Values from the file are not printed.
+- Discover Continue `.continue/mcpServers/*.{yaml,yml,json}` and an `mcpServers` list in `.continue/config.yaml` and `~/.continue/config.yaml` (user file skipped with `--no-user`). Each list entry is one server. `command` and `args` are stdio, `url` is HTTP, and neither is `NO_TRANSPORT`. A file with no `mcpServers` list is skipped. A missing `.continue/` directory is not a failure. Unpinned `npx` packages still warn `UNPINNED_PACKAGE`. A JSON object dropped in that directory uses the existing `mcpServers` parser.
+- Discover Junie `.junie/mcp/mcp.json` and `~/.junie/mcp/mcp.json` (unless `--no-user`), using the existing `mcpServers` parser. A missing file is skipped.
+- Discover Cline `~/.cline/data/settings/cline_mcp_settings.json` unless `--no-user` is set. `CLINE_MCP_SETTINGS_PATH` replaces that file. `CLINE_DATA_DIR` uses `<dir>/settings/cline_mcp_settings.json` when the settings path is unset. A missing file is skipped.
+
 ### Changed
 
-- README states that npm `latest` and the `v1` Action tag track 1.2.1.
+- README states that npm `latest` and the `v1` Action tag track 1.2.1, and that `package.json` is 1.3.0 until the `v1.3.0` tag is pushed.
 - README shows a monorepo `path`, `fail-on-missing`, a full SARIF upload workflow, and husky, lefthook, and pre-commit snippets.
-- `--no-user` help text names every user-level client it skips.
+- README lists Claude Code `~/.claude.json`, Continue, Junie, and Cline, including `CLAUDE_CONFIG_DIR`, `CLINE_MCP_SETTINGS_PATH`, and `CLINE_DATA_DIR`.
+- `--no-user` help text names every user-level client it skips, including Continue, Junie, and Cline.
 
 ### Fixed
 

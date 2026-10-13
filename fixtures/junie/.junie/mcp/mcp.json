@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "node",
+      "args": ["--version"]
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer junie-header-secret-do-not-print"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "Extra block",
+  "version": "0.0.1",
+  "schema": "v1",
+  "mcpServers": [
+    {
+      "name": "from-block",
+      "command": "node",
+      "args": ["--version"]
+    }
+  ]
+}
