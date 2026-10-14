@@ -17,6 +17,19 @@ function reportFindings(report: HealthReport): Finding[] {
   );
 }
 
+/**
+ * Directory SARIF and annotation paths are relative to.
+ * A scan root inside the workspace (process cwd, or a monorepo package under
+ * it) uses the workspace, so `path: services/api` still points at
+ * `services/api/.vscode/mcp.json`. A scan root outside the workspace stays
+ * its own root.
+ */
+export function annotationRoot(scanRoot: string, cwd = process.cwd()): string {
+  const rel = relative(cwd, scanRoot);
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return cwd;
+  return scanRoot;
+}
+
 export function artifactUri(root: string, file: string | undefined): string {
   if (!file) return "mcp-health";
   const rel = relative(root, file);
@@ -43,6 +56,7 @@ export function lineOfServer(file: string | undefined, server?: string): number 
 
 export function buildSarif(report: HealthReport): Record<string, unknown> {
   const findings = reportFindings(report);
+  const base = annotationRoot(report.root);
   const rules = new Map<string, "error" | "warning" | "note">();
   for (const finding of findings) {
     const level = levelFor(finding.severity);
@@ -71,7 +85,7 @@ export function buildSarif(report: HealthReport): Record<string, unknown> {
         },
         results: findings.map((finding) => {
           const file = finding.file;
-          const uri = artifactUri(report.root, file);
+          const uri = artifactUri(base, file);
           return {
             ruleId: finding.code,
             level: levelFor(finding.severity),
@@ -106,9 +120,10 @@ function escapeWorkflowProperty(text: string): string {
 /** GitHub Actions workflow commands. One line per warn/fail finding. */
 export function formatAnnotations(report: HealthReport): string {
   const lines: string[] = [];
+  const base = annotationRoot(report.root);
   for (const finding of reportFindings(report)) {
     const command = finding.severity === "fail" ? "error" : "warning";
-    const file = artifactUri(report.root, finding.file);
+    const file = artifactUri(base, finding.file);
     const line = lineOfServer(finding.file, finding.server);
     const title = escapeWorkflowProperty(finding.code);
     const message = escapeWorkflowData(
