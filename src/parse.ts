@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
@@ -307,6 +307,26 @@ function normalizeProjectPath(
   return normalized.replace(/\\/g, "/");
 }
 
+/**
+ * Directory identity for a `projects` key.
+ * Trailing-slash and Windows case behavior stay on the string form.
+ * A path that exists on this machine is compared by its real path, so a
+ * symlink and macOS `/tmp` versus `/private/tmp` match the same directory.
+ */
+function canonicalProjectPath(
+  input: string,
+  platform: NodeJS.Platform,
+): string {
+  const normalized = normalizeProjectPath(input, platform);
+  if (platform !== process.platform) return normalized;
+  try {
+    if (!existsSync(normalized)) return normalized;
+    return normalizeProjectPath(realpathSync(normalized), platform);
+  } catch {
+    return normalized;
+  }
+}
+
 function isClaudeUserConfig(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
   return normalized === ".claude.json" || normalized.endsWith("/.claude.json");
@@ -398,6 +418,7 @@ function parseContinueFile(path: string, text: string): ConfigFile {
 /**
  * `~/.claude.json` holds user servers at the top level and local servers under
  * `projects[<absolute path>]`. Only the scan root's project entry is read.
+ * The key matches when it is the same directory, including a symlink.
  * A project entry with the same server name replaces the user entry.
  * With neither section, the file is skipped.
  */
@@ -423,9 +444,9 @@ function parseClaudeUserFile(
     typeof projects === "object" &&
     !Array.isArray(projects)
   ) {
-    const wanted = normalizeProjectPath(options.root, platform);
+    const wanted = canonicalProjectPath(options.root, platform);
     for (const [key, value] of Object.entries(projects)) {
-      if (normalizeProjectPath(key, platform) !== wanted) continue;
+      if (canonicalProjectPath(key, platform) !== wanted) continue;
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         return invalidConfig(path, "projects entry must be an object");
       }

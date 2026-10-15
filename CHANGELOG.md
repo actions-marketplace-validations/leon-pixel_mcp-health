@@ -7,6 +7,15 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code `projects` keys in `~/.claude.json` match the scan root when both paths are the same directory, including a symlink and macOS `/tmp` versus `/private/tmp`. A key for a different directory is still ignored. Trailing-slash and Windows case matching is unchanged.
+
+### Changed
+
+- A scan with no MCP config still exits 1. The `NO_CONFIG` message names a project file to add (`.cursor/mcp.json` or `.vscode/mcp.json`) and `--allow-missing` to exit 0 when the repository is supposed to have no MCP config.
+- Human-readable server rows say `project` or `user`. JSON keeps the file path and adds `scope`. Summary counts are unchanged.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added

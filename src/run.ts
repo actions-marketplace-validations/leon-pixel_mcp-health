@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { discoverConfigPaths, type LocateOptions } from "./discover.js";
+import {
+  configFileScope,
+  discoverConfigPaths,
+  type LocateOptions,
+} from "./discover.js";
 import { configHasServers, isOptionalMcpFile, parseConfigFile } from "./parse.js";
 import {
   checkConfig,
@@ -105,10 +109,16 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
 
   for (const path of paths) {
     files.push(path);
+    const scope = configFileScope(path, {
+      platform: options.platform,
+      home: options.home,
+      env: options.env,
+    });
     if (!existsSync(path)) {
       servers.push({
         name: "(file)",
         file: path,
+        scope,
         transport: "unknown",
         status: "fail",
         findings: [
@@ -132,6 +142,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       servers.push({
         name: "(file)",
         file: path,
+        scope,
         transport: "unknown",
         status: "fail",
         findings: [
@@ -179,6 +190,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
         servers.push({
           name: "(skipped)",
           file: path,
+          scope,
           transport: "unknown",
           status: "ok",
           findings: [
@@ -196,6 +208,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       servers.push({
         name: "(config)",
         file: path,
+        scope,
         transport: "unknown",
         status,
         findings,
@@ -210,6 +223,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       servers.push({
         name: "(config)",
         file: path,
+        scope,
         transport: "unknown",
         status,
         findings,
@@ -316,6 +330,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       servers.push({
         name: server.name,
         file: path,
+        scope,
         transport: server.transport.kind,
         status,
         findings: findingsForReport,
@@ -335,7 +350,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
           severity,
           code: "NO_CONFIG",
           message:
-            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Windsurf, Zed, or Codex project or user paths)",
+            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Windsurf, Zed, or Codex project or user paths). Add a project file such as .cursor/mcp.json or .vscode/mcp.json, or pass --allow-missing to exit 0 when this repository is supposed to have no MCP config.",
           file: root,
         },
       ],
