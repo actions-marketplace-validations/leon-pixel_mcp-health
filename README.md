@@ -164,18 +164,22 @@ repos:
 | Cursor | `.cursor/mcp.json`, `mcp.json`, `.mcp.json` | `mcpServers` |
 | VS Code | `.vscode/mcp.json` | `servers` |
 | Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | `mcpServers` |
+| Gemini CLI | `.gemini/settings.json` | `mcpServers`. A file with no `mcpServers` key is skipped |
 | Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |
 | Junie | `.junie/mcp/mcp.json` | `mcpServers` |
 | Windsurf | `.windsurf/mcp_config.json` | `mcpServers`. Remote URLs may be `serverUrl` or `url` |
 | Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }`. `"source": "extension"` is an extension server. Comments and trailing commas are allowed |
 | Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `url`, `env`, `http_headers`, `bearer_token_env_var`, `env_http_headers`, `enabled` |
 
-A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, or a settings file with no MCP section is skipped. It is not a failed scan.
+A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, or another settings file with no MCP section is skipped. It is not a failed scan.
 
 **User-level** (disable with `--no-user`):
 
 - Cursor `~/.cursor/mcp.json`
+- VS Code user `mcp.json` (`servers`): `~/Library/Application Support/Code/User/mcp.json` on macOS, `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config/Code/User/mcp.json`) on Linux, or `%APPDATA%/Code/User/mcp.json` on Windows. Insiders and VSCodium are not scanned
+- Copilot `mcp-config.json` (`mcpServers`): `$COPILOT_HOME/mcp-config.json`, or `~/.copilot/mcp-config.json` when `COPILOT_HOME` is unset
 - Claude Code `~/.claude/settings.json`
+- Gemini CLI `~/.gemini/settings.json`. When `GEMINI_CLI_HOME` is set, the file is `$GEMINI_CLI_HOME/.gemini/settings.json`. Shape `mcpServers`. A file with no `mcpServers` key is skipped. System settings are not scanned
 - Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
 - Continue `~/.continue/config.yaml` (`mcpServers` list)
 - Junie `~/.junie/mcp/mcp.json`
@@ -188,11 +192,11 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 
 ## Checks
 
-- Offline: JSON, YAML, and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders
+- Offline: JSON, YAML, and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders. `npx`, `npm exec`, `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, and `yarn dlx` warn `UNPINNED_PACKAGE` unless the package is `name@version` (`uvx --from name@version` counts as pinned). `-y`, `--yes`, `--quiet`, `dlx`, and `exec` are not the package name
 - Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, and a set `${env:NAME}` are expanded. `${input:…}` and an unset `${env:NAME}` are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. `--strict-variables` fails on the warnings too. Values are never printed
 - `disabled: true` (Cursor) and `enabled: false` (Codex, Zed) are reported as disabled and are not checked
 - Zed `"source": "extension"` is an extension-provided server. It is not a missing command
-- `--online`: npm latest vs the pinned version or semver range (`NPM_DRIFT` only when latest is outside the pin)
+- `--online`: npm latest vs the pinned version or semver range (`NPM_DRIFT` only when latest is outside the pin). The lookup uses the same package those launchers run. A registry miss is `NPM_LOOKUP_FAILED`
 - `--probe`: MCP handshake from the project root (stdio spawn, or HTTP POST). Stdio matches the JSON-RPC id and skips logs and notifications. HTTP sends the config headers, plus Codex `bearer_token_env_var` and `env_http_headers` when those variables are set. A 401 with an OAuth `WWW-Authenticate` challenge is a warning (`PROBE_OAUTH`); the editor signs in and this probe does not. Env values are never printed
 - After a successful handshake, `--probe` also calls `tools/list`. One or more tools is `TOOLS_OK`. An empty list is a warning, `EMPTY_TOOLS`, not a failure and not `HEALTHY`. A tools/list error or timeout is a warning, `TOOLS_LIST_FAILED`. `--no-tools` skips that call
 
@@ -202,7 +206,7 @@ The initialize request uses protocol revision `2025-11-25`. If the server reject
 
 mcp-health reads the MCP config files already in a repo (and, unless you pass `--no-user`, the user-level files above) and reports whether those entries will load: missing commands, bad URLs, unpinned packages, optional registry drift, and an optional handshake that includes `tools/list`. The GitHub Action is the CI form of that scan, with annotations and SARIF.
 
-[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Windsurf, Zed, or Codex config files.
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Copilot, Windsurf, Zed, or Codex config files.
 
 [MCP Doctor](https://mcpdoctor.ai/) (`npx mcpdoctor test …`) grades one server command against the MCP spec. [mcp-healthcheck](https://github.com/SiluPanda/mcp-healthcheck) is a liveness probe for one server URL or stdio command, including Kubernetes-style checks. mcp-health does not call tools, score spec compliance, or watch a running server. It checks the configs an agent will load.
 

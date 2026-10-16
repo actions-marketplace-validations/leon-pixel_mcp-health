@@ -335,7 +335,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
           severity,
           code: "NO_CONFIG",
           message:
-            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Windsurf, Zed, or Codex project or user paths)",
+            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Copilot, Windsurf, Zed, or Codex project or user paths)",
           file: root,
         },
       ],
