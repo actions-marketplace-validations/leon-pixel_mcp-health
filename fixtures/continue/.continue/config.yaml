@@ -1,0 +1,16 @@
+name: Local config
+version: 1.0.0
+schema: v1
+models:
+  - name: secret-model
+    apiKey: continue-config-secret-do-not-print
+mcpServers:
+  - name: config-local
+    command: node
+    args:
+      - "--version"
+    env:
+      TOKEN: continue-server-secret-do-not-print
+  - name: no-transport
+    env:
+      NOTE: continue-transport-secret-do-not-print

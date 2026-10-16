@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { posix, win32 } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { parseJsonc } from "./jsonc.js";
 import type { ConfigFile, ParsedServer, ServerTransport } from "./types.js";
 
 const CommandObjectSchema = z.object({
@@ -18,6 +21,12 @@ const ServerEntrySchema = z
     type: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
     headers: z.record(z.string(), z.string()).optional(),
+    disabled: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+    source: z.string().optional(),
+    settings: z.unknown().optional(),
+    bearerTokenEnvVar: z.string().optional(),
+    envHttpHeaders: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 
@@ -33,7 +42,17 @@ const ContextServersDocSchema = z.object({
   context_servers: z.record(z.string(), ServerEntrySchema),
 });
 
+const ContinueEntrySchema = ServerEntrySchema.extend({
+  name: z.string(),
+});
+
 type ServerEntry = z.infer<typeof ServerEntrySchema>;
+
+export type ParseOptions = {
+  /** Scan root. Claude Code uses it to select `projects[<path>]`. */
+  root?: string;
+  platform?: NodeJS.Platform;
+};
 
 function httpUrl(entry: ServerEntry): string | undefined {
   const url = entry.url?.trim() || entry.serverUrl?.trim();
@@ -200,51 +219,242 @@ function parseCodexToml(path: string, text: string): ConfigFile {
         error: `mcp_servers.${name}.url must be a string`,
       };
     }
+    if (entry.enabled !== undefined && typeof entry.enabled !== "boolean") {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: `mcp_servers.${name}.enabled must be a boolean`,
+      };
+    }
+    if (
+      entry.bearer_token_env_var !== undefined &&
+      typeof entry.bearer_token_env_var !== "string"
+    ) {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: `mcp_servers.${name}.bearer_token_env_var must be a string`,
+      };
+    }
+    const envHeaders =
+      entry.env_http_headers === undefined
+        ? undefined
+        : asStringRecord(entry.env_http_headers);
+    if (entry.env_http_headers !== undefined && !envHeaders) {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: `mcp_servers.${name}.env_http_headers values must be strings`,
+      };
+    }
     record[name] = {
       command: typeof entry.command === "string" ? entry.command : undefined,
       args,
       url: typeof entry.url === "string" ? entry.url : undefined,
       env,
       headers,
+      enabled: typeof entry.enabled === "boolean" ? entry.enabled : undefined,
+      bearerTokenEnvVar:
+        typeof entry.bearer_token_env_var === "string"
+          ? entry.bearer_token_env_var
+          : undefined,
+      envHttpHeaders: envHeaders,
     };
   }
 
   return { path, format: "codex", servers: mapServers(record) };
 }
 
-export function parseConfigFile(path: string): ConfigFile {
-  const text = readFileSync(path, "utf8");
-  if (path.replace(/\\/g, "/").endsWith(".toml")) {
-    return parseCodexToml(path, text);
+function parseMcpServersValue(path: string, mcpServers: unknown): ConfigFile {
+  const asMcp = McpServersDocSchema.safeParse({ mcpServers });
+  if (asMcp.success) {
+    return {
+      path,
+      format: "mcpServers",
+      servers: mapServers(asMcp.data.mcpServers),
+    };
   }
+  return {
+    path,
+    format: "invalid",
+    servers: [],
+    error: formatZodError(asMcp.error),
+  };
+}
 
-  let json: unknown;
+function invalidConfig(path: string, error: string): ConfigFile {
+  return { path, format: "invalid", servers: [], error };
+}
+
+/** Compare Claude `projects` keys to the scan root, including Windows paths. */
+function normalizeProjectPath(
+  input: string,
+  platform: NodeJS.Platform,
+): string {
+  const pathApi = platform === "win32" ? win32 : posix;
+  let normalized = pathApi.resolve(input);
+  if (platform === "win32") normalized = normalized.toLowerCase();
+  const root = pathApi.parse(normalized).root;
+  if (
+    normalized.length > root.length &&
+    (normalized.endsWith("/") || normalized.endsWith("\\"))
+  ) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized.replace(/\\/g, "/");
+}
+
+function isClaudeUserConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized === ".claude.json" || normalized.endsWith("/.claude.json");
+}
+
+function isContinueConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  if (
+    normalized === ".continue/config.yaml" ||
+    normalized.endsWith("/.continue/config.yaml")
+  ) {
+    return true;
+  }
+  return /(?:^|\/)\.continue\/mcpServers\/[^/]+\.(yaml|yml|json)$/i.test(
+    normalized,
+  );
+}
+
+function readJson(path: string, text: string): unknown {
   try {
-    json = JSON.parse(text);
+    return parseJsonc(text);
   } catch (err) {
     throw new Error(
       `Invalid JSON in ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+function readYaml(path: string, text: string): unknown {
+  try {
+    return parseYaml(text);
+  } catch (err) {
+    throw new Error(
+      `Invalid YAML in ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function parseContinueList(path: string, section: unknown[]): ConfigFile {
+  const parsed = z.array(ContinueEntrySchema).safeParse(section);
+  if (!parsed.success) {
+    return invalidConfig(path, formatZodError(parsed.error));
+  }
+  const record: Record<string, ServerEntry> = {};
+  for (const [index, entry] of parsed.data.entries()) {
+    if (entry.name in record) {
+      return invalidConfig(
+        path,
+        `mcpServers.${index}.name duplicates an earlier entry`,
+      );
+    }
+    record[entry.name] = entry;
+  }
+  return { path, format: "mcpServers", servers: mapServers(record) };
+}
+
+/**
+ * Continue stores `mcpServers` as a list. A JSON file dropped in
+ * `.continue/mcpServers/` may instead be a Cursor-style object; that form
+ * uses the existing parser. A document with no `mcpServers` key is skipped.
+ */
+function parseContinueDocument(path: string, doc: unknown): ConfigFile {
+  if (doc === null || doc === undefined) {
+    return { path, format: "none", servers: [] };
+  }
+  if (typeof doc !== "object" || Array.isArray(doc)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = doc as Record<string, unknown>;
+  if (!("mcpServers" in obj)) {
+    return { path, format: "none", servers: [] };
+  }
+  const section = obj.mcpServers;
+  if (Array.isArray(section)) return parseContinueList(path, section);
+  if (section && typeof section === "object") {
+    return parseMcpServersValue(path, section);
+  }
+  return invalidConfig(path, "mcpServers must be a list of servers");
+}
+
+function parseContinueFile(path: string, text: string): ConfigFile {
+  const normalized = path.replace(/\\/g, "/").toLowerCase();
+  const doc = normalized.endsWith(".json")
+    ? readJson(path, text)
+    : readYaml(path, text);
+  return parseContinueDocument(path, doc);
+}
+
+/**
+ * `~/.claude.json` holds user servers at the top level and local servers under
+ * `projects[<absolute path>]`. Only the scan root's project entry is read.
+ * A project entry with the same server name replaces the user entry.
+ * With neither section, the file is skipped.
+ */
+function parseClaudeUserFile(
+  path: string,
+  text: string,
+  options: ParseOptions,
+): ConfigFile {
+  const json = readJson(path, text);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = json as Record<string, unknown>;
+  const platform = options.platform ?? process.platform;
+  const sections: unknown[] = [];
+
+  if ("mcpServers" in obj) sections.push(obj.mcpServers);
+
+  const projects = obj.projects;
+  if (
+    options.root &&
+    projects &&
+    typeof projects === "object" &&
+    !Array.isArray(projects)
+  ) {
+    const wanted = normalizeProjectPath(options.root, platform);
+    for (const [key, value] of Object.entries(projects)) {
+      if (normalizeProjectPath(key, platform) !== wanted) continue;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return invalidConfig(path, "projects entry must be an object");
+      }
+      if ("mcpServers" in value) sections.push(value.mcpServers);
+      break;
+    }
+  }
+
+  if (sections.length === 0) {
+    return { path, format: "none", servers: [] };
+  }
+
+  const merged = new Map<string, ParsedServer>();
+  for (const section of sections) {
+    const parsed = parseMcpServersValue(path, section);
+    if (parsed.format !== "mcpServers") return parsed;
+    for (const server of parsed.servers) merged.set(server.name, server);
+  }
+  return { path, format: "mcpServers", servers: [...merged.values()] };
+}
+
+function parseJsonDocument(path: string, text: string): ConfigFile {
+  const json = readJson(path, text);
 
   if (json !== null && typeof json === "object" && !Array.isArray(json)) {
     const obj = json as Record<string, unknown>;
 
     if ("mcpServers" in obj) {
-      const asMcp = McpServersDocSchema.safeParse(json);
-      if (asMcp.success) {
-        return {
-          path,
-          format: "mcpServers",
-          servers: mapServers(asMcp.data.mcpServers),
-        };
-      }
-      return {
-        path,
-        format: "invalid",
-        servers: [],
-        error: formatZodError(asMcp.error),
-      };
+      return parseMcpServersValue(path, obj.mcpServers);
     }
 
     if ("servers" in obj) {
@@ -287,6 +497,16 @@ export function parseConfigFile(path: string): ConfigFile {
   return { path, format: "unknown", servers: [] };
 }
 
+export function parseConfigFile(path: string, options: ParseOptions = {}): ConfigFile {
+  const text = readFileSync(path, "utf8");
+  if (path.replace(/\\/g, "/").endsWith(".toml")) {
+    return parseCodexToml(path, text);
+  }
+  if (isContinueConfig(path)) return parseContinueFile(path, text);
+  if (isClaudeUserConfig(path)) return parseClaudeUserFile(path, text, options);
+  return parseJsonDocument(path, text);
+}
+
 /** Settings-style files may exist without an MCP section — don't hard-fail. */
 export function isOptionalMcpFile(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
@@ -294,6 +514,8 @@ export function isOptionalMcpFile(path: string): boolean {
     normalized.endsWith("/settings.json") ||
     normalized.endsWith("/settings.local.json") ||
     normalized.endsWith("/claude_desktop_config.json") ||
-    normalized.endsWith(".codex/config.toml")
+    normalized.endsWith(".codex/config.toml") ||
+    isClaudeUserConfig(path) ||
+    isContinueConfig(path)
   );
 }

@@ -1,13 +1,24 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { runCheck } from "./run.js";
 import { exitCode, formatHuman, formatJson } from "./report.js";
 import { buildSarif, formatAnnotations } from "./sarif.js";
 import { VERSION } from "./version.js";
 
 const program = new Command();
+
+/** Positive milliseconds. Rejects NaN, zero, and negatives before a probe can start. */
+function parseProbeTimeout(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError(
+      "--probe-timeout value must be a positive number of milliseconds",
+    );
+  }
+  return parsed;
+}
 
 program
   .name("mcp-health")
@@ -22,7 +33,10 @@ program
   .argument("[root]", "Project root to scan", ".")
   .option("-f, --file <path>", "Specific config file (repeatable)", collect, [])
   .option("--json", "Print JSON report", false)
-  .option("--no-user", "Ignore user-level Cursor/Claude Desktop configs")
+  .option(
+    "--no-user",
+    "Skip user-level configs (Cursor, Claude Code, Claude Desktop, Continue, Junie, Cline, Windsurf, Devin, Zed, and Codex)",
+  )
   .option(
     "--online",
     "Query npm registry for package drift (network required)",
@@ -36,7 +50,7 @@ program
   .option(
     "--probe-timeout <ms>",
     "Probe timeout in milliseconds",
-    (v) => Number(v),
+    parseProbeTimeout,
     8000,
   )
   .option("--no-tools", "With --probe, skip tools/list")
@@ -47,6 +61,16 @@ program
   .option(
     "--github-annotations",
     "Print GitHub Actions annotations on stderr",
+    false,
+  )
+  .option(
+    "--strict-variables",
+    "Fail on ${input:…} and unset ${env:…} instead of warning",
+    false,
+  )
+  .option(
+    "--allow-missing",
+    "Exit 0 when no MCP config file is found",
     false,
   )
   .action(
@@ -62,16 +86,22 @@ program
         tools?: boolean;
         sarif?: string;
         githubAnnotations?: boolean;
+        strictVariables?: boolean;
+        allowMissing?: boolean;
       },
     ) => {
       const report = await runCheck({
         root,
-        files: opts.file.length ? opts.file : undefined,
+        files: opts.file.length
+          ? opts.file.map((file) => resolve(process.cwd(), file))
+          : undefined,
         includeUserConfig: opts.user !== false,
         online: Boolean(opts.online),
         probe: Boolean(opts.probe),
         probeTimeoutMs: opts.probeTimeout,
         probeListTools: opts.tools !== false,
+        strictVariables: Boolean(opts.strictVariables),
+        allowMissing: Boolean(opts.allowMissing),
       });
 
       if (opts.sarif) {

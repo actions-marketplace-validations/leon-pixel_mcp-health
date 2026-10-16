@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.3.0] - 2026-10-13
+
+### Added
+
+- Discover Claude Code user and local servers in `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for the scan root only. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` selects the directory. On Windows the file is `%USERPROFILE%\.claude.json`. `--no-user` skips the file, including the per-project entry. A file with no servers for this root is skipped, not `NO_MCP_SECTION`. Values from the file are not printed.
+- Discover Continue `.continue/mcpServers/*.{yaml,yml,json}` and an `mcpServers` list in `.continue/config.yaml` and `~/.continue/config.yaml` (user file skipped with `--no-user`). Each list entry is one server. `command` and `args` are stdio, `url` is HTTP, and neither is `NO_TRANSPORT`. A file with no `mcpServers` list is skipped. A missing `.continue/` directory is not a failure. Unpinned `npx` packages still warn `UNPINNED_PACKAGE`. A JSON object dropped in that directory uses the existing `mcpServers` parser.
+- Discover Junie `.junie/mcp/mcp.json` and `~/.junie/mcp/mcp.json` (unless `--no-user`), using the existing `mcpServers` parser. A missing file is skipped.
+- Discover Cline `~/.cline/data/settings/cline_mcp_settings.json` unless `--no-user` is set. `CLINE_MCP_SETTINGS_PATH` replaces that file. `CLINE_DATA_DIR` uses `<dir>/settings/cline_mcp_settings.json` when the settings path is unset. A missing file is skipped.
+
+### Changed
+
+- README states that npm `latest` and the `v1` Action tag track 1.2.1, and that `package.json` is 1.3.0 until the `v1.3.0` tag is pushed.
+- README shows a monorepo `path`, `fail-on-missing`, a full SARIF upload workflow, and husky, lefthook, and pre-commit snippets.
+- README lists Claude Code `~/.claude.json`, Continue, Junie, and Cline, including `CLAUDE_CONFIG_DIR`, `CLINE_MCP_SETTINGS_PATH`, and `CLINE_DATA_DIR`.
+- `--no-user` help text names every user-level client it skips, including Continue, Junie, and Cline.
+
+### Fixed
+
+- An empty server map still exits 1, and the summary line says that config-level warning is why. Server counts still add up. `NO_CONFIG` is unchanged.
+- `--probe-timeout` must be a positive number of milliseconds. A non-numeric, zero, or negative value exits before a probe starts. The default stays 8000.
+- On Windows, the user-level scan includes the Claude Desktop MSIX config `%LOCALAPPDATA%/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json` when that file exists, along with `%APPDATA%/Claude/claude_desktop_config.json`.
+
+## [1.2.1] - 2026-10-10
+
+### Fixed
+
+- `${input:…}` and an unset `${env:NAME}` are warnings. Unknown `${…}` tokens still fail. `--strict-variables` fails on the warnings too. A probe is not started while a variable is unresolved.
+- Cursor `disabled: true` and Codex or Zed `enabled: false` are reported as disabled and are not checked.
+- An HTTP 401 or 403 with an OAuth `WWW-Authenticate` challenge is `PROBE_OAUTH`, a warning. The MCP client signs in. A 401 without that challenge is still a failure.
+- JSON configs accept comments and trailing commas.
+- Codex `bearer_token_env_var` and `env_http_headers` are sent on probes. A missing variable is `AUTH_ENV_UNSET` and the value is not printed.
+- Zed `"source": "extension"` servers are not `NO_TRANSPORT`.
+- Relative `-f` paths resolve from the current directory. A missing file is `FILE_NOT_FOUND`. A missing scan root is `ROOT_NOT_FOUND`. HTTP connection failures include the cause, such as `ECONNREFUSED`.
+- Summary `ok`, `warn`, and `fail` count servers only, so they add up. Skipped settings files are `skipped`.
+- The Action does not fail a job that only has `NO_CONFIG`, unless `fail-on-missing` is true.
+- Node.js 22.12 or newer is required, matching commander 15. CI, the release workflow, and the Action default use Node 22.
+
+### Changed
+
+- README and roadmap match the published package, the `v1` tag, and the Marketplace listing.
+- The release workflow publishes the current changelog section, requests `id-token: write`, and publishes with provenance. `NPM_TOKEN` remains the fallback when trusted publishing is not configured.
+- Workflows use `actions/checkout@v7`, `actions/setup-node@v7`, and `softprops/action-gh-release@v3`. The Action uses `actions/setup-node@v7` and `github/codeql-action/upload-sarif@v4`.
+
 ## [1.2.0] - 2026-10-10
 
 ### Added

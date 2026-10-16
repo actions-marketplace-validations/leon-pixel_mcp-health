@@ -30,7 +30,7 @@ export function lookupEnv(
 /**
  * Expand the VS Code / Cursor variables a config scan can know about.
  * Unknown tokens, including `${input:…}`, are left in place so the
- * checker can fail the server instead of reporting it healthy.
+ * checker can report them instead of treating the server as healthy.
  */
 export function expandString(input: string, ctx: ExpandContext): string {
   const env = ctx.env ?? process.env;

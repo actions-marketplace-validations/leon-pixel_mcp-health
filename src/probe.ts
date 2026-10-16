@@ -569,7 +569,27 @@ async function readMatchingRpc(
 type HttpExchange = {
   status: number;
   message?: RpcMessage;
+  wwwAuthenticate?: string;
 };
+
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts = [err.message];
+  const cause = err.cause;
+  if (cause instanceof Error) {
+    const code =
+      "code" in cause && typeof cause.code === "string" ? cause.code : undefined;
+    if (code && !err.message.includes(code)) parts.push(code);
+    if (cause.message && !err.message.includes(cause.message)) parts.push(cause.message);
+  }
+  return parts.join(": ");
+}
+
+function isOAuthChallenge(header: string | undefined): boolean {
+  if (!header) return false;
+  const value = header.toLowerCase();
+  return value.includes("bearer") && (value.includes("oauth") || value.includes("resource_metadata"));
+}
 
 async function postJson(
   url: string,
@@ -586,17 +606,18 @@ async function postJson(
       headers,
       body: JSON.stringify(body),
     });
+    const wwwAuthenticate = res.headers.get("www-authenticate") ?? undefined;
     const id = typeof body.id === "number" ? body.id : 1;
     let message: RpcMessage | undefined;
     try {
       message = await readMatchingRpc(res, id);
     } catch (err) {
       if (res.status === 401 || res.status === 403) {
-        return { status: res.status };
+        return { status: res.status, wwwAuthenticate };
       }
       throw err;
     }
-    return { status: res.status, message };
+    return { status: res.status, message, wwwAuthenticate };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error(`Timed out waiting for HTTP response (${timeoutMs}ms)`);
@@ -607,16 +628,35 @@ async function postJson(
   }
 }
 
+function resolvedEnvHeaders(server: ParsedServer): Record<string, string> {
+  const mapped = server.raw.envHttpHeaders;
+  if (!mapped || typeof mapped !== "object" || Array.isArray(mapped)) return {};
+  const out: Record<string, string> = {};
+  for (const [name, envName] of Object.entries(mapped)) {
+    if (typeof envName !== "string" || !envName.trim()) continue;
+    const value = process.env[envName];
+    if (typeof value === "string") out[name] = value;
+  }
+  return out;
+}
+
 function requestHeaders(
   server: ParsedServer,
   protocol: string,
 ): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     ...stringRecord(server.raw.headers),
+    ...resolvedEnvHeaders(server),
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
     "mcp-protocol-version": protocol,
   };
+  const bearerEnv = server.raw.bearerTokenEnvVar;
+  if (typeof bearerEnv === "string" && bearerEnv.trim()) {
+    const value = process.env[bearerEnv];
+    if (typeof value === "string" && value) headers.Authorization = `Bearer ${value}`;
+  }
+  return headers;
 }
 
 function httpOutcome(
@@ -626,10 +666,24 @@ function httpOutcome(
 ): ProbeResult {
   const { status, message } = exchange;
   if (status === 401 || status === 403) {
+    if (isOAuthChallenge(exchange.wwwAuthenticate)) {
+      return finding(
+        "warn",
+        "PROBE_OAUTH",
+        `HTTP ${status} asks the client to sign in with OAuth. This probe does not complete that login.`,
+        server.name,
+        file,
+      );
+    }
     const configured = Object.keys(stringRecord(server.raw.headers));
+    const bearer =
+      typeof server.raw.bearerTokenEnvVar === "string" && server.raw.bearerTokenEnvVar
+        ? [server.raw.bearerTokenEnvVar]
+        : [];
+    const names = [...configured, ...bearer];
     const headerNote =
-      configured.length > 0
-        ? ` Config headers were sent (${configured.join(", ")}).`
+      names.length > 0
+        ? ` Config auth was considered (${names.join(", ")}).`
         : " No headers are set on this server.";
     return finding(
       "fail",
@@ -799,7 +853,7 @@ export async function probeHttpServer(
     return finding(
       "fail",
       "PROBE_FAILED",
-      err instanceof Error ? err.message : String(err),
+      describeError(err),
       server.name,
       options.file,
     );

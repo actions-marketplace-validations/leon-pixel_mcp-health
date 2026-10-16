@@ -1,0 +1,38 @@
+{
+  "oauthAccount": {
+    "accessToken": "claude-oauth-secret-do-not-print"
+  },
+  "mcpServers": {
+    "user-memory": {
+      "command": "node",
+      "args": ["--version"],
+      "env": {
+        "TOKEN": "claude-user-secret-do-not-print"
+      }
+    }
+  },
+  "projects": {
+    "__ROOT__": {
+      "mcpServers": {
+        "local-fs": {
+          "command": "node",
+          "args": ["--version"],
+          "env": {
+            "TOKEN": "claude-local-secret-do-not-print"
+          }
+        }
+      }
+    },
+    "/definitely/not/the/scan/root": {
+      "mcpServers": {
+        "other-db": {
+          "command": "node",
+          "args": ["--version"],
+          "env": {
+            "TOKEN": "claude-other-secret-do-not-print"
+          }
+        }
+      }
+    }
+  }
+}
