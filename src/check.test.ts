@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -41,6 +41,172 @@ describe("extractNpxPackage", () => {
   it("reads package from npx args", () => {
     expect(extractNpxPackage("npx", ["-y", "foo@1.0.0"])).toBe("foo@1.0.0");
     expect(extractNpxPackage("npm", ["exec", "-y", "bar@2"])).toBe("bar@2");
+    expect(extractNpxPackage("/usr/local/bin/npx", ["-y", "foo@1.0.0"])).toBe(
+      "foo@1.0.0",
+    );
+    expect(extractNpxPackage("npm.cmd", ["exec", "--yes", "bar@2"])).toBe("bar@2");
+  });
+
+  it("reads uvx, bunx, pnpm, and yarn packages and ignores launcher flags", () => {
+    expect(extractNpxPackage("uvx", ["mcp-server-git"])).toBe("mcp-server-git");
+    expect(extractNpxPackage("uvx", ["mcp-server-git@1.2.3"])).toBe(
+      "mcp-server-git@1.2.3",
+    );
+    expect(
+      extractNpxPackage("uvx", ["--from", "mcp-server-git@1.2.3", "mcp-server-git"]),
+    ).toBe("mcp-server-git@1.2.3");
+    expect(extractNpxPackage("uvx", ["--from=mcp-server-git@1.2.3"])).toBe(
+      "mcp-server-git@1.2.3",
+    );
+    expect(extractNpxPackage("uvx", ["-y", "--yes", "--quiet", "mcp-server-git"])).toBe(
+      "mcp-server-git",
+    );
+    expect(extractNpxPackage("uvx", ["--python", "3.12", "mcp-server-git"])).toBe(
+      "mcp-server-git",
+    );
+    expect(extractNpxPackage("uvx", ["--with", "extra", "mcp-server-git"])).toBe(
+      "mcp-server-git",
+    );
+    expect(extractNpxPackage("uvx.exe", ["pkg@1"])).toBe("pkg@1");
+
+    expect(extractNpxPackage("bunx", ["--quiet", "some-mcp-server"])).toBe(
+      "some-mcp-server",
+    );
+    expect(extractNpxPackage("bunx", ["some-mcp-server@1.2.3"])).toBe(
+      "some-mcp-server@1.2.3",
+    );
+
+    expect(extractNpxPackage("pnpm", ["dlx", "some-mcp-server"])).toBe("some-mcp-server");
+    expect(extractNpxPackage("pnpm", ["dlx", "--yes", "some-mcp-server@1.2.3"])).toBe(
+      "some-mcp-server@1.2.3",
+    );
+    expect(extractNpxPackage("pnpm", ["exec", "-y", "some-mcp-server"])).toBe(
+      "some-mcp-server",
+    );
+    expect(extractNpxPackage("pnpm", ["--dir", "/tmp", "dlx", "--quiet", "pkg"])).toBe(
+      "pkg",
+    );
+    expect(extractNpxPackage("pnpm", ["dlx", "--dir", "/tmp", "pkg"])).toBe("pkg");
+    expect(extractNpxPackage("pnpm", ["install", "left-pad"])).toBeUndefined();
+    expect(extractNpxPackage("pnpm.cmd", ["dlx", "pkg@1.2.3"])).toBe("pkg@1.2.3");
+
+    expect(extractNpxPackage("yarn", ["dlx", "--quiet", "some-mcp-server"])).toBe(
+      "some-mcp-server",
+    );
+    expect(extractNpxPackage("yarn", ["dlx", "some-mcp-server@1.2.3"])).toBe(
+      "some-mcp-server@1.2.3",
+    );
+    expect(extractNpxPackage("yarn", ["some-mcp-server"])).toBeUndefined();
+    expect(extractNpxPackage("yarn", ["dlx"])).toBeUndefined();
+    expect(extractNpxPackage("pnpm", ["exec"])).toBeUndefined();
+  });
+});
+
+describe("unpinned uvx, bunx, pnpm, and yarn launches", () => {
+  function codesFor(report: Awaited<ReturnType<typeof runCheck>>, name: string): string[] {
+    return (
+      report.servers
+        .find((server) => server.name === name)
+        ?.findings.map((finding) => finding.code) ?? []
+    );
+  }
+
+  function messageFor(
+    report: Awaited<ReturnType<typeof runCheck>>,
+    name: string,
+    code: string,
+  ): string | undefined {
+    return report.servers
+      .find((server) => server.name === name)
+      ?.findings.find((finding) => finding.code === code)?.message;
+  }
+
+  const servers = {
+    "uvx-loose": { command: "uvx", args: ["mcp-server-git"] },
+    "uvx-pinned": {
+      command: "uvx",
+      args: ["--from", "mcp-server-git@1.2.3", "mcp-server-git"],
+    },
+    "uvx-arg-pinned": { command: "uvx", args: ["mcp-server-git@1.2.3"] },
+    "pnpm-loose": { command: "pnpm", args: ["dlx", "--quiet", "some-mcp-server"] },
+    "pnpm-pinned": { command: "pnpm", args: ["dlx", "some-mcp-server@9.9.9"] },
+    "pnpm-exec": { command: "pnpm", args: ["exec", "-y", "other-mcp"] },
+    "pnpm-install": { command: "pnpm", args: ["install", "left-pad"] },
+    "bunx-loose": { command: "bunx", args: ["-y", "some-bun-server"] },
+    "yarn-loose": { command: "yarn", args: ["dlx", "--yes", "some-yarn-server"] },
+    "yarn-pinned": { command: "yarn", args: ["dlx", "some-yarn-server@1.0.0"] },
+  };
+
+  function writeLaunchers(): string {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-launchers-"));
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: servers }));
+    return dir;
+  }
+
+  it("warns when uvx or pnpm dlx has no version and stays quiet when pinned", async () => {
+    const dir = writeLaunchers();
+    const fetchSpy = vi.fn(() => {
+      throw new Error("offline test contacted the network");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      const report = await runCheck({ root: dir, includeUserConfig: false, env: {} });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(messageFor(report, "uvx-loose", "UNPINNED_PACKAGE")).toBe(
+        'Package "mcp-server-git" is not version-pinned (recommend name@version)',
+      );
+      expect(codesFor(report, "uvx-pinned")).not.toContain("UNPINNED_PACKAGE");
+      expect(codesFor(report, "uvx-arg-pinned")).not.toContain("UNPINNED_PACKAGE");
+      expect(messageFor(report, "pnpm-loose", "UNPINNED_PACKAGE")).toBe(
+        'Package "some-mcp-server" is not version-pinned (recommend name@version)',
+      );
+      expect(codesFor(report, "pnpm-pinned")).not.toContain("UNPINNED_PACKAGE");
+      expect(messageFor(report, "pnpm-exec", "UNPINNED_PACKAGE")).toBe(
+        'Package "other-mcp" is not version-pinned (recommend name@version)',
+      );
+      expect(codesFor(report, "pnpm-install")).not.toContain("UNPINNED_PACKAGE");
+      expect(messageFor(report, "bunx-loose", "UNPINNED_PACKAGE")).toBe(
+        'Package "some-bun-server" is not version-pinned (recommend name@version)',
+      );
+      expect(messageFor(report, "yarn-loose", "UNPINNED_PACKAGE")).toBe(
+        'Package "some-yarn-server" is not version-pinned (recommend name@version)',
+      );
+      expect(codesFor(report, "yarn-pinned")).not.toContain("UNPINNED_PACKAGE");
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("looks up the launcher package online and reports NPM_LOOKUP_FAILED on a registry miss", async () => {
+    const dir = writeLaunchers();
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      urls.push(String(input));
+      return new Response("missing", { status: 404 });
+    });
+    try {
+      const report = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        env: {},
+        online: true,
+      });
+      expect(urls).toContain("https://registry.npmjs.org/mcp-server-git/latest");
+      expect(urls).toContain("https://registry.npmjs.org/some-mcp-server/latest");
+      expect(urls).not.toContain("https://registry.npmjs.org/dlx/latest");
+      expect(urls).not.toContain("https://registry.npmjs.org/--quiet/latest");
+      expect(messageFor(report, "uvx-pinned", "NPM_LOOKUP_FAILED")).toContain(
+        "npm registry HTTP 404 for mcp-server-git",
+      );
+      expect(codesFor(report, "uvx-pinned")).not.toContain("UNPINNED_PACKAGE");
+      expect(codesFor(report, "pnpm-loose")).toContain("NPM_LOOKUP_FAILED");
+      expect(codesFor(report, "pnpm-loose")).toContain("UNPINNED_PACKAGE");
+      expect(codesFor(report, "pnpm-install")).not.toContain("NPM_LOOKUP_FAILED");
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

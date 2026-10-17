@@ -106,11 +106,14 @@ describe("--no-user help", () => {
     const help = result.stdout.replace(/\s+/g, " ");
     for (const client of [
       "Cursor",
+      "VS Code",
       "Claude Code",
       "Claude Desktop",
       "Continue",
       "Junie",
       "Cline",
+      "Gemini CLI",
+      "Copilot",
       "Windsurf",
       "Devin",
       "Zed",

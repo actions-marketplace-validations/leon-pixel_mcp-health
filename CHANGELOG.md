@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Discover Gemini CLI project `.gemini/settings.json` and user `~/.gemini/settings.json`. `GEMINI_CLI_HOME` selects `$GEMINI_CLI_HOME/.gemini/settings.json`. `mcpServers` uses the existing parser. A settings file with no `mcpServers` key is skipped. `--no-user` skips the user file. System settings are not scanned.
+- Discover the VS Code user `mcp.json` (`servers`) and the Copilot user `mcp-config.json` (`mcpServers`). VS Code uses `~/Library/Application Support/Code/User/mcp.json` on macOS, `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config/Code/User/mcp.json`) on Linux, and `%APPDATA%/Code/User/mcp.json` on Windows. `COPILOT_HOME` replaces `~/.copilot`. `--no-user` skips both. A missing file is skipped. Insiders and VSCodium are not scanned.
+- Warn `UNPINNED_PACKAGE` when `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, or `yarn dlx` launches a package without a version. `name@version` and `uvx --from name@version` do not warn. `--online` looks up that same package. A registry miss stays `NPM_LOOKUP_FAILED`.
+
 ### Fixed
 
 - Claude Code `projects` keys in `~/.claude.json` match the scan root when both paths are the same directory, including a symlink and macOS `/tmp` versus `/private/tmp`. A key for a different directory is still ignored. Trailing-slash and Windows case matching is unchanged.

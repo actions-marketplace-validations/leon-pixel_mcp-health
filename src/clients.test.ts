@@ -717,3 +717,323 @@ describe("Cline user settings", () => {
     }
   });
 });
+
+describe("Gemini CLI settings.json", () => {
+  const secret = "gemini-secret-do-not-print";
+
+  function writeSettings(file: string, body: unknown) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(body));
+  }
+
+  it("reads a project server and skips a settings file with no mcpServers key", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-gemini-project-"));
+    const file = join(root, ".gemini", "settings.json");
+    try {
+      expect(__testing.PROJECT_CANDIDATES).toContain(".gemini/settings.json");
+      writeSettings(file, {
+        theme: "dark",
+        mcpServers: {
+          local: {
+            command: "node",
+            args: ["--version"],
+            env: { TOKEN: secret },
+          },
+          remote: { url: "https://example.com/mcp" },
+        },
+      });
+      const parsed = parseConfigFile(file);
+      expect(parsed.format).toBe("mcpServers");
+      expect(parsed.servers.map((server) => server.name).sort()).toEqual([
+        "local",
+        "remote",
+      ]);
+      expect(parsed.servers.find((server) => server.name === "local")?.transport).toEqual({
+        kind: "stdio",
+        command: "node",
+        args: ["--version"],
+      });
+      expect(parsed.servers.find((server) => server.name === "local")?.raw.env).toEqual({
+        TOKEN: secret,
+      });
+      expect(parsed.servers.find((server) => server.name === "remote")?.transport).toEqual({
+        kind: "http",
+        url: "https://example.com/mcp",
+      });
+
+      const report = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(names(report).sort()).toEqual(["local", "remote"]);
+      expect(report.servers.every((server) => server.scope === "project")).toBe(true);
+      expect(report.summary.fail).toBe(0);
+      expect(codes(report)).not.toContain("UNKNOWN_FORMAT");
+      expect(codes(report)).not.toContain("SKIPPED_NO_MCP");
+      expectSecretsHidden(report, [secret]);
+
+      writeSettings(file, { theme: "dark", selectedAuthType: secret });
+      const skipped = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(skipped)).toEqual(["SKIPPED_NO_MCP"]);
+      expect(codes(skipped)).not.toContain("UNKNOWN_FORMAT");
+      expect(codes(skipped)).not.toContain("NO_MCP_SECTION");
+      expect(skipped.summary.fail).toBe(0);
+      expect(parseConfigFile(file).format).toBe("none");
+      expectSecretsHidden(skipped, [secret]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads ~/.gemini/settings.json unless --no-user is set, and honors GEMINI_CLI_HOME", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-gemini-user-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-gemini-home-"));
+    const override = join(home, "gemini-home");
+    const userFile = join(home, ".gemini", "settings.json");
+    const overrideFile = join(override, ".gemini", "settings.json");
+    try {
+      expect(__testing.geminiUserPath({ home, env: {} })).toBe(userFile);
+      expect(__testing.geminiUserPath({ home, env: { GEMINI_CLI_HOME: "  " } })).toBe(
+        userFile,
+      );
+      expect(
+        __testing.geminiUserPath({ home, env: { GEMINI_CLI_HOME: override } }),
+      ).toBe(overrideFile);
+
+      writeSettings(userFile, {
+        mcpServers: {
+          fromHome: {
+            command: "node",
+            args: ["--version"],
+            env: { TOKEN: secret },
+          },
+        },
+      });
+      const included = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(names(included)).toEqual(["fromHome"]);
+      expect(included.files).toContain(userFile);
+      expect(included.servers[0]?.scope).toBe("user");
+      expectSecretsHidden(included, [secret]);
+
+      const skipped = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(names(skipped)).not.toContain("fromHome");
+      expect(skipped.files).not.toContain(userFile);
+      expect(codes(skipped)).toEqual(["NO_CONFIG"]);
+      expect(codes(skipped)).not.toContain("FILE_NOT_FOUND");
+      expectSecretsHidden(skipped, [secret]);
+
+      writeSettings(overrideFile, {
+        mcpServers: {
+          fromOverride: { command: "node", args: ["--version"] },
+        },
+      });
+      const relocated = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { GEMINI_CLI_HOME: override },
+      });
+      expect(names(relocated)).toEqual(["fromOverride"]);
+      expect(relocated.files).toContain(overrideFile);
+      expect(relocated.files).not.toContain(userFile);
+      expect(relocated.servers[0]?.scope).toBe("user");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("VS Code user mcp.json and Copilot mcp-config.json", () => {
+  const vscodeSecret = "vscode-user-secret-do-not-print";
+  const copilotSecret = "copilot-user-secret-do-not-print";
+
+  function writeJson(file: string, body: unknown) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(body));
+  }
+
+  it("selects the VS Code user path per platform and reads one server", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-vscode-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-vscode-home-"));
+    try {
+      const linux = { platform: "linux" as const, home, env: {} };
+      const xdg = join(home, "xdg");
+      const linuxXdg = {
+        platform: "linux" as const,
+        home,
+        env: { XDG_CONFIG_HOME: xdg },
+      };
+      const mac = {
+        platform: "darwin" as const,
+        home,
+        env: { XDG_CONFIG_HOME: xdg },
+      };
+      const appData = join(home, "AppData", "Roaming");
+      const win = {
+        platform: "win32" as const,
+        home,
+        env: { APPDATA: appData },
+      };
+      const winDefault = { platform: "win32" as const, home, env: {} };
+
+      expect(__testing.vscodeUserMcpPath(linux)).toBe(
+        join(home, ".config", "Code", "User", "mcp.json"),
+      );
+      expect(__testing.vscodeUserMcpPath(linuxXdg)).toBe(
+        join(xdg, "Code", "User", "mcp.json"),
+      );
+      expect(__testing.vscodeUserMcpPath(mac)).toBe(
+        join(home, "Library", "Application Support", "Code", "User", "mcp.json"),
+      );
+      expect(__testing.vscodeUserMcpPath(win)).toBe(
+        join(appData, "Code", "User", "mcp.json"),
+      );
+      expect(__testing.vscodeUserMcpPath(winDefault)).toBe(
+        join(home, "AppData", "Roaming", "Code", "User", "mcp.json"),
+      );
+
+      const cases = [
+        { label: "linux", options: linux },
+        { label: "xdg", options: linuxXdg },
+        { label: "mac", options: mac },
+        { label: "windows", options: win },
+      ];
+      for (const entry of cases) {
+        const file = __testing.vscodeUserMcpPath(entry.options);
+        writeJson(file, {
+          servers: {
+            vscodeUser: {
+              command: "node",
+              args: ["--version"],
+              env: { TOKEN: vscodeSecret },
+            },
+          },
+        });
+        const parsed = parseConfigFile(file);
+        expect(parsed.format, entry.label).toBe("servers");
+        expect(parsed.servers.map((server) => server.name), entry.label).toEqual([
+          "vscodeUser",
+        ]);
+        const report = await runCheck({
+          root,
+          includeUserConfig: true,
+          ...entry.options,
+        });
+        expect(names(report), entry.label).toEqual(["vscodeUser"]);
+        expect(report.files, entry.label).toContain(file);
+        expect(report.servers[0]?.scope, entry.label).toBe("user");
+        expect(report.summary.fail, entry.label).toBe(0);
+        expectSecretsHidden(report, [vscodeSecret]);
+        rmSync(file);
+      }
+
+      const missing = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+        platform: "linux",
+      });
+      expect(codes(missing)).toEqual(["NO_CONFIG"]);
+      expect(codes(missing)).not.toContain("FILE_NOT_FOUND");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reads Copilot mcp-config.json unless --no-user is set, and honors COPILOT_HOME", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-copilot-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-copilot-home-"));
+    const copilotHome = join(home, "copilot-home");
+    const userFile = join(home, ".copilot", "mcp-config.json");
+    const overrideFile = join(copilotHome, "mcp-config.json");
+    const vscodeFile = join(home, ".config", "Code", "User", "mcp.json");
+    try {
+      expect(__testing.copilotUserPath({ home, env: {} })).toBe(userFile);
+      expect(__testing.copilotUserPath({ home, env: { COPILOT_HOME: " " } })).toBe(
+        userFile,
+      );
+      expect(
+        __testing.copilotUserPath({ home, env: { COPILOT_HOME: copilotHome } }),
+      ).toBe(overrideFile);
+
+      writeJson(userFile, {
+        mcpServers: {
+          copilotUser: {
+            command: "node",
+            args: ["--version"],
+            env: { TOKEN: copilotSecret },
+          },
+        },
+      });
+      writeJson(vscodeFile, {
+        servers: {
+          vscodeUser: { command: "node", args: ["--version"] },
+        },
+      });
+
+      const included = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        platform: "linux",
+        env: {},
+      });
+      expect(names(included).sort()).toEqual(["copilotUser", "vscodeUser"]);
+      expect(parseConfigFile(userFile).format).toBe("mcpServers");
+      expect(
+        included.servers.find((server) => server.name === "copilotUser")?.scope,
+      ).toBe("user");
+      expect(
+        included.servers.find((server) => server.name === "vscodeUser")?.scope,
+      ).toBe("user");
+      expectSecretsHidden(included, [copilotSecret]);
+
+      const skipped = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        platform: "linux",
+        env: {},
+      });
+      expect(names(skipped)).not.toContain("copilotUser");
+      expect(names(skipped)).not.toContain("vscodeUser");
+      expect(skipped.files).not.toContain(userFile);
+      expect(skipped.files).not.toContain(vscodeFile);
+      expect(codes(skipped)).toEqual(["NO_CONFIG"]);
+      expect(codes(skipped)).not.toContain("FILE_NOT_FOUND");
+      expectSecretsHidden(skipped, [copilotSecret]);
+
+      writeJson(overrideFile, {
+        mcpServers: {
+          fromCopilotHome: { command: "node", args: ["--version"] },
+        },
+      });
+      const relocated = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        platform: "linux",
+        env: { COPILOT_HOME: copilotHome },
+      });
+      expect(names(relocated).sort()).toEqual(["fromCopilotHome", "vscodeUser"]);
+      expect(relocated.files).toContain(overrideFile);
+      expect(relocated.files).not.toContain(userFile);
+      expect(
+        relocated.servers.find((server) => server.name === "fromCopilotHome")?.scope,
+      ).toBe("user");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

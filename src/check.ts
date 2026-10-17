@@ -211,25 +211,100 @@ export function isVersionPinned(pkg: string): boolean {
   return /^[^@]+@.+$/.test(pkg);
 }
 
-export function extractNpxPackage(command: string, args: string[]): string | undefined {
-  const cleaned = args.filter((a) => a !== "-y" && a !== "--yes" && a !== "--");
-  if (command === "npx" || command.endsWith("/npx") || command.endsWith("\\npx")) {
-    const pkg = cleaned.find((a) => !a.startsWith("-"));
-    return pkg;
-  }
+/** `npx`, `npx.cmd`, and `C:\\path\\npx.exe` all share one launcher name. */
+function commandBasename(command: string): string {
   const base = command.split(/[/\\]/).pop() ?? command;
-  if (base === "npx" || base === "npx.cmd" || base === "npx.exe") {
-    const pkg = cleaned.find((a) => !a.startsWith("-"));
-    return pkg;
-  }
-  if (command === "npm" || base === "npm" || base === "npm.cmd" || base === "npm.exe") {
-    // npm exec [-y] pkg
-    const execIdx = cleaned.indexOf("exec");
-    if (execIdx === -1) return undefined;
-    const rest = cleaned.slice(execIdx + 1).filter((a) => !a.startsWith("-"));
-    return rest[0];
+  return base.replace(/\.(cmd|exe)$/i, "");
+}
+
+const PACKAGE_RUNNERS = new Set(["npx", "npm", "uvx", "bunx", "pnpm", "yarn"]);
+
+/**
+ * Flags whose next argument is not the package.
+ * `uvx -p` is a Python version. `npx -p` is the package, so it is not listed here.
+ */
+const NON_PACKAGE_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  uvx: new Set([
+    "--with",
+    "--with-editable",
+    "--with-requirements",
+    "--python",
+    "-p",
+    "--index",
+    "--default-index",
+    "--index-url",
+    "--extra-index-url",
+    "--find-links",
+    "--config-file",
+    "--python-preference",
+    "--keyring-provider",
+    "--index-strategy",
+    "--prerelease",
+  ]),
+  pnpm: new Set(["--config", "--reporter", "--dir", "-C"]),
+};
+
+function explicitFromPackage(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") break;
+    if (arg === "--from") {
+      const next = args[i + 1];
+      if (next && next !== "--" && !next.startsWith("-")) return next;
+      continue;
+    }
+    if (arg.startsWith("--from=")) {
+      const value = arg.slice("--from=".length);
+      if (value) return value;
+    }
   }
   return undefined;
+}
+
+function firstPackageArg(args: string[], launcher: string): string | undefined {
+  const skipValue = NON_PACKAGE_VALUE_FLAGS[launcher];
+  const skipSubcommand = launcher === "pnpm" || launcher === "yarn";
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--" || arg === "--from") continue;
+    if (arg.startsWith("--from=")) continue;
+    if (skipValue?.has(arg)) {
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    if (skipSubcommand && (arg === "dlx" || arg === "exec")) continue;
+    return arg;
+  }
+  return undefined;
+}
+
+/**
+ * Package spec launched by npx, npm exec, uvx, bunx, pnpm dlx, pnpm exec, or yarn dlx.
+ * `--from <spec>` wins. Flags (`-y`, `--yes`, `--quiet`) and the `dlx` / `exec`
+ * subcommands are not the package.
+ */
+export function extractNpxPackage(command: string, args: string[]): string | undefined {
+  const base = commandBasename(command);
+  if (!PACKAGE_RUNNERS.has(base)) return undefined;
+
+  let rest = args;
+  if (base === "npm") {
+    const execIdx = rest.indexOf("exec");
+    if (execIdx === -1) return undefined;
+    rest = rest.slice(execIdx + 1);
+  } else if (base === "pnpm") {
+    const idx = rest.findIndex((arg) => arg === "dlx" || arg === "exec");
+    if (idx === -1) return undefined;
+    rest = rest.slice(idx + 1);
+  } else if (base === "yarn") {
+    const idx = rest.indexOf("dlx");
+    if (idx === -1) return undefined;
+    rest = rest.slice(idx + 1);
+  }
+
+  return explicitFromPackage(rest) ?? firstPackageArg(rest, base);
 }
 
 function worst(a: Severity, b: Severity): Severity {
@@ -384,25 +459,20 @@ export function checkConfig(
         });
       }
 
-      const base = command.split(/[/\\]/).pop() ?? command;
-      if (
-        !commandUnresolved &&
-        (base === "npx" ||
-          base === "npx.cmd" ||
-          base === "npx.exe" ||
-          base === "npm" ||
-          base === "npm.cmd" ||
-          base === "npm.exe")
-      ) {
+      const base = commandBasename(command);
+      if (!commandUnresolved && PACKAGE_RUNNERS.has(base)) {
         const pkg = extractNpxPackage(command, args);
         if (!pkg) {
-          local.push({
-            severity: "warn",
-            code: "NPX_NO_PACKAGE",
-            message: "npx/npm exec invoked without a clear package argument",
-            server: server.name,
-            file: file.path,
-          });
+          // pnpm/yarn without dlx or exec are not package launches.
+          if (base === "npx" || base === "npm") {
+            local.push({
+              severity: "warn",
+              code: "NPX_NO_PACKAGE",
+              message: "npx/npm exec invoked without a clear package argument",
+              server: server.name,
+              file: file.path,
+            });
+          }
         } else if (!isVersionPinned(pkg)) {
           local.push({
             severity: "warn",

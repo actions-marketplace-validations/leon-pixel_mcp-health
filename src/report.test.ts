@@ -24,6 +24,8 @@ describe("zero-config check", () => {
       expect(warned.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
       expect(message).toContain(".cursor/mcp.json");
       expect(message).toContain(".vscode/mcp.json");
+      expect(message).toContain("Gemini CLI");
+      expect(message).toContain("Copilot");
       expect(message).toContain("--allow-missing");
       expect(formatHuman(warned)).toContain(message);
       expect(warned.servers[0]?.status).toBe("warn");
