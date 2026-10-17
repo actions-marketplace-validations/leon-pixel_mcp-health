@@ -55,6 +55,10 @@ npx @leon-pixel/mcp-health check --no-user .
 | `1` | Warnings only |
 | `2` | Failures |
 
+A directory with no MCP config exits 1. The message names a project file to add, such as `.cursor/mcp.json` or `.vscode/mcp.json`, and `--allow-missing`, which exits 0 when the repository is supposed to have no MCP config. The GitHub Action passes `--allow-missing` unless `fail-on-missing` is true.
+
+Text output labels each server row `project` or `user`. JSON keeps the file path and adds `scope` (`"project"` or `"user"`). Summary counts are unchanged.
+
 `--sarif` and `--github-annotations` do not change the exit code. They add a SARIF file and stderr annotations beside the usual report. Ok findings are left out of both.
 
 ## GitHub Action
@@ -176,7 +180,7 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 
 - Cursor `~/.cursor/mcp.json`
 - Claude Code `~/.claude/settings.json`
-- Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
+- Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. A key matches when it is the same directory as the scan root, including a symlink and macOS `/tmp` versus `/private/tmp`. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
 - Continue `~/.continue/config.yaml` (`mcpServers` list)
 - Junie `~/.junie/mcp/mcp.json`
 - Cline `~/.cline/data/settings/cline_mcp_settings.json`. `CLINE_MCP_SETTINGS_PATH` replaces that file. When it is unset, `CLINE_DATA_DIR` reads `<CLINE_DATA_DIR>/settings/cline_mcp_settings.json`
@@ -209,9 +213,9 @@ mcp-health reads the MCP config files already in a repo (and, unless you pass `-
 ## Example
 
 ```text
-[FAIL] broken-binary  (stdio)
+[FAIL] broken-binary  (stdio)  project  mcp.json
     - FAIL COMMAND_NOT_FOUND: ...
-[WARN] unpinned  (stdio)
+[WARN] unpinned  (stdio)  user  ~/.cursor/mcp.json
     - WARN UNPINNED_PACKAGE: ...
 ```
 
