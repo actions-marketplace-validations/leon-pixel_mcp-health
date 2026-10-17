@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,6 +124,68 @@ describe("Claude Code ~/.claude.json", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the project server when the scan root is another path to the same directory", async () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-health-claude-link-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-claude-link-home-"));
+    const other = mkdtempSync(join(tmpdir(), "mcp-health-claude-link-other-"));
+    const real = join(base, "private", "tmp", "proj");
+    mkdirSync(real, { recursive: true });
+    symlinkSync(join(base, "private", "tmp"), join(base, "tmp"), "dir");
+    const viaTmp = join(base, "tmp", "proj");
+    const linked = join(base, "linked");
+    symlinkSync(real, linked, "dir");
+    const otherLink = join(base, "other-link");
+    symlinkSync(other, otherLink, "dir");
+    const file = join(home, ".claude.json");
+    const project = (name: string) => ({
+      mcpServers: { [name]: { command: "node", args: ["--version"] } },
+    });
+    const writeHome = (projects: Record<string, unknown>) => {
+      writeFileSync(
+        file,
+        JSON.stringify({
+          mcpServers: {
+            "user-memory": { command: "node", args: ["--version"] },
+          },
+          projects,
+        }),
+      );
+    };
+    try {
+      writeHome({
+        [real]: project("local-fs"),
+        [other]: project("other-db"),
+      });
+      for (const root of [linked, viaTmp]) {
+        const report = await runCheck({
+          root,
+          includeUserConfig: true,
+          home,
+          env: {},
+        });
+        expect(names(report).sort()).toEqual(["local-fs", "user-memory"]);
+        expect(names(report)).not.toContain("other-db");
+      }
+
+      writeHome({
+        [`${linked}/`]: project("local-fs"),
+        [`${otherLink}/`]: project("other-db"),
+      });
+      const fromReal = await runCheck({
+        root: real,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(names(fromReal).sort()).toEqual(["local-fs", "user-memory"]);
+      expect(names(fromReal)).not.toContain("other-db");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
     }
   });
 
@@ -694,6 +763,7 @@ describe("Gemini CLI settings.json", () => {
 
       const report = await runCheck({ root, includeUserConfig: false, env: {} });
       expect(names(report).sort()).toEqual(["local", "remote"]);
+      expect(report.servers.every((server) => server.scope === "project")).toBe(true);
       expect(report.summary.fail).toBe(0);
       expect(codes(report)).not.toContain("UNKNOWN_FORMAT");
       expect(codes(report)).not.toContain("SKIPPED_NO_MCP");
@@ -744,6 +814,7 @@ describe("Gemini CLI settings.json", () => {
       });
       expect(names(included)).toEqual(["fromHome"]);
       expect(included.files).toContain(userFile);
+      expect(included.servers[0]?.scope).toBe("user");
       expectSecretsHidden(included, [secret]);
 
       const skipped = await runCheck({
@@ -772,6 +843,7 @@ describe("Gemini CLI settings.json", () => {
       expect(names(relocated)).toEqual(["fromOverride"]);
       expect(relocated.files).toContain(overrideFile);
       expect(relocated.files).not.toContain(userFile);
+      expect(relocated.servers[0]?.scope).toBe("user");
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
@@ -857,6 +929,7 @@ describe("VS Code user mcp.json and Copilot mcp-config.json", () => {
         });
         expect(names(report), entry.label).toEqual(["vscodeUser"]);
         expect(report.files, entry.label).toContain(file);
+        expect(report.servers[0]?.scope, entry.label).toBe("user");
         expect(report.summary.fail, entry.label).toBe(0);
         expectSecretsHidden(report, [vscodeSecret]);
         rmSync(file);
@@ -917,6 +990,12 @@ describe("VS Code user mcp.json and Copilot mcp-config.json", () => {
       });
       expect(names(included).sort()).toEqual(["copilotUser", "vscodeUser"]);
       expect(parseConfigFile(userFile).format).toBe("mcpServers");
+      expect(
+        included.servers.find((server) => server.name === "copilotUser")?.scope,
+      ).toBe("user");
+      expect(
+        included.servers.find((server) => server.name === "vscodeUser")?.scope,
+      ).toBe("user");
       expectSecretsHidden(included, [copilotSecret]);
 
       const skipped = await runCheck({
@@ -949,6 +1028,9 @@ describe("VS Code user mcp.json and Copilot mcp-config.json", () => {
       expect(names(relocated).sort()).toEqual(["fromCopilotHome", "vscodeUser"]);
       expect(relocated.files).toContain(overrideFile);
       expect(relocated.files).not.toContain(userFile);
+      expect(
+        relocated.servers.find((server) => server.name === "fromCopilotHome")?.scope,
+      ).toBe("user");
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });

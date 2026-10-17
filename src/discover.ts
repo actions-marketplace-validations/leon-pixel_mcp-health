@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
+import type { ConfigScope } from "./types.js";
 
 const PROJECT_CANDIDATES = [
   ".cursor/mcp.json",
@@ -181,6 +182,36 @@ function continueBlockFiles(root: string): string[] {
     files.push(full);
   }
   return files;
+}
+
+/** Stable identity for labeling a config file as project or user. */
+function configPathIdentity(input: string): string {
+  let normalized = resolve(input);
+  if (process.platform === "win32") normalized = normalized.toLowerCase();
+  try {
+    if (existsSync(normalized)) {
+      normalized = realpathSync(normalized);
+      if (process.platform === "win32") normalized = normalized.toLowerCase();
+    }
+  } catch {
+    // Keep the resolved path when the file cannot be canonicalized.
+  }
+  return normalized.replace(/\\/g, "/");
+}
+
+/**
+ * `user` when `file` is one of the user-level configs (`~/.cursor/mcp.json`,
+ * `~/.claude.json`, and the rest). Every other config file is `project`.
+ */
+export function configFileScope(
+  file: string,
+  options: LocateOptions = {},
+): ConfigScope {
+  const wanted = configPathIdentity(file);
+  for (const entry of userLevelPaths(options)) {
+    if (configPathIdentity(entry) === wanted) return "user";
+  }
+  return "project";
 }
 
 function userLevelPaths(options: LocateOptions = {}): string[] {
