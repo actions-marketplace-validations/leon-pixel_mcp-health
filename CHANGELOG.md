@@ -13,6 +13,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Discover the VS Code user `mcp.json` (`servers`) and the Copilot user `mcp-config.json` (`mcpServers`). VS Code uses `~/Library/Application Support/Code/User/mcp.json` on macOS, `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config/Code/User/mcp.json`) on Linux, and `%APPDATA%/Code/User/mcp.json` on Windows. `COPILOT_HOME` replaces `~/.copilot`. `--no-user` skips both. A missing file is skipped. Insiders and VSCodium are not scanned.
 - Warn `UNPINNED_PACKAGE` when `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, or `yarn dlx` launches a package without a version. `name@version` and `uvx --from name@version` do not warn. `--online` looks up that same package. A registry miss stays `NPM_LOOKUP_FAILED`.
 
+### Fixed
+
+- A relative stdio command is resolved from the scan root, and the probe spawns that absolute path. A command that exists only in the process working directory is still `COMMAND_NOT_FOUND`.
+- On Windows, a bare command is searched in the scan root before `PATH`, with `PATHEXT`. An empty `PATH` entry is that directory on every platform. An unset `PATH` does not search it.
+- SARIF URIs and GitHub annotation `file` paths are relative to the workspace when the scan root is the process working directory or a subdirectory of it. A scan root outside that directory stays relative to itself.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added

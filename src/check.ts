@@ -1,6 +1,6 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
@@ -52,16 +52,33 @@ export function commandNeedsShell(
   return platform === "win32" && /\.(cmd|bat)$/i.test(executable);
 }
 
+function findInDir(
+  dir: string,
+  names: string[],
+  platform: NodeJS.Platform,
+): string | undefined {
+  for (const name of names) {
+    const full = join(dir, name);
+    if (isRunnable(full, platform)) return full;
+  }
+  return undefined;
+}
+
 /**
  * Resolve a command the way the host shell would.
  * On Windows, `npx` is `npx.cmd` / `npx.exe` and is found via PATHEXT.
- * Returns an absolute path when the command is on PATH.
+ * A relative command is resolved from `cwd` (the scan root).
+ * On Windows that directory is searched before PATH.
+ * An empty PATH entry means that directory on every platform.
+ * Returns an absolute path when the command is found.
  */
 export function resolveCommandOnPath(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  cwd?: string,
 ): string | undefined {
+  const base = cwd && cwd.trim() ? resolve(cwd) : process.cwd();
   const extensions = pathExtensions(env, platform);
   const names =
     platform === "win32" && !hasPathExtension(command, extensions)
@@ -72,24 +89,32 @@ export function resolveCommandOnPath(
     isAbsolute(command) || command.includes("/") || command.includes("\\");
   if (direct) {
     for (const name of names) {
-      if (isRunnable(name, platform)) return name;
+      const candidate = isAbsolute(name) ? name : join(base, name);
+      if (isRunnable(candidate, platform)) return candidate;
     }
     return undefined;
   }
 
-  const pathEnv = env.PATH ?? "";
-  for (const dir of pathEnv.split(pathDelimiter(platform))) {
-    if (!dir) continue;
-    for (const name of names) {
-      const full = join(dir, name);
-      if (isRunnable(full, platform)) return full;
-    }
+  if (platform === "win32") {
+    const fromCwd = findInDir(base, names, platform);
+    if (fromCwd) return fromCwd;
+  }
+
+  if (env.PATH === undefined) return undefined;
+  for (const dir of env.PATH.split(pathDelimiter(platform))) {
+    const fromDir = dir
+      ? findInDir(dir, names, platform)
+      : findInDir(base, names, platform);
+    if (fromDir) return fromDir;
   }
   return undefined;
 }
 
-function commandOnPath(command: string): boolean {
-  return resolveCommandOnPath(command) !== undefined;
+function commandOnPath(command: string, cwd?: string): boolean {
+  return (
+    resolveCommandOnPath(command, process.env, process.platform, cwd) !==
+    undefined
+  );
 }
 
 function unresolvedTokens(value: string): string[] {
@@ -289,7 +314,7 @@ function worst(a: Severity, b: Severity): Severity {
 
 export function checkConfig(
   file: ConfigFile,
-  options: { strictVariables?: boolean } = {},
+  options: { strictVariables?: boolean; cwd?: string } = {},
 ): {
   findings: Finding[];
   perServer: Map<string, { status: Severity; findings: Finding[] }>;
@@ -424,7 +449,7 @@ export function checkConfig(
       const { command, args } = server.transport;
       const commandUnresolved = unresolvedTokens(command).length > 0;
 
-      if (!commandUnresolved && !commandOnPath(command)) {
+      if (!commandUnresolved && !commandOnPath(command, options.cwd)) {
         local.push({
           severity: "fail",
           code: "COMMAND_NOT_FOUND",

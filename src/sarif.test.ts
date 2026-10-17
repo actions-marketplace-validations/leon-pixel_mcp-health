@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runCheck } from "./run.js";
-import { buildSarif, formatAnnotations } from "./sarif.js";
+import { annotationRoot, artifactUri, buildSarif, formatAnnotations } from "./sarif.js";
 import type { HealthReport } from "./types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,7 +59,7 @@ describe("buildSarif", () => {
     expect(broken?.message.text).toContain("broken-binary");
     expect(broken?.message.text.length).toBeGreaterThan("broken-binary".length);
     expect(broken?.locations[0]?.physicalLocation.artifactLocation.uri).toBe(
-      "mcp.json",
+      "fixtures/issues/mcp.json",
     );
     expect(broken?.locations[0]?.physicalLocation.region.startLine).toBe(3);
 
@@ -105,7 +105,7 @@ describe("buildSarif", () => {
     const text = formatAnnotations(report);
     expect(text).toContain("::error ");
     expect(text).toContain("title=BAD");
-    expect(text).toContain("file=mcp.json");
+    expect(text).toContain("file=fixtures/issues/mcp.json");
     expect(text).toContain("100%25 broken%0Anext");
 
     const clean: HealthReport = {
@@ -131,6 +131,45 @@ describe("buildSarif", () => {
       version: "2.1.0",
       runs: [{ results: [] }],
     });
+  });
+
+  it("uses the workspace when the scan root is a subdirectory", () => {
+    expect(annotationRoot("/repo/services/api", "/repo")).toBe("/repo");
+    expect(
+      artifactUri("/repo", "/repo/services/api/.vscode/mcp.json"),
+    ).toBe("services/api/.vscode/mcp.json");
+    expect(annotationRoot("/repo", "/repo")).toBe("/repo");
+  });
+
+  it("keeps a scan root outside the workspace relative to itself", async () => {
+    expect(annotationRoot("/tmp/scan", "/repo")).toBe("/tmp/scan");
+    expect(artifactUri("/tmp/scan", "/tmp/scan/mcp.json")).toBe("mcp.json");
+
+    const scan = mkdtempSync(join(tmpdir(), "mcp-health-sarif-outside-"));
+    try {
+      writeFileSync(
+        join(scan, "mcp.json"),
+        JSON.stringify({
+          mcpServers: { broken: { command: "definitely-missing-binary-xyz" } },
+        }),
+      );
+      const report = await runCheck({
+        root: scan,
+        includeUserConfig: false,
+      });
+      const text = formatAnnotations(report);
+      expect(text).toContain("file=mcp.json");
+      expect(text).not.toContain("file=fixtures/");
+      const sarif = buildSarif(report) as {
+        runs: Array<{ results: SarifResult[] }>;
+      };
+      const uri =
+        sarif.runs[0]?.results.find((result) => result.ruleId === "COMMAND_NOT_FOUND")
+          ?.locations[0]?.physicalLocation.artifactLocation.uri;
+      expect(uri).toBe("mcp.json");
+    } finally {
+      rmSync(scan, { recursive: true, force: true });
+    }
   });
 });
 
@@ -171,6 +210,7 @@ describe("cli sarif and tools flags", () => {
       expect(result.stdout).not.toContain("sarif-2.1.0");
       expect(result.stdout).not.toContain("::error");
       expect(result.stderr).toContain("::error");
+      expect(result.stderr).toContain("file=fixtures/issues/mcp.json");
       expect(result.stderr).toContain("COMMAND_NOT_FOUND");
       const sarif = JSON.parse(readFileSync(sarifPath, "utf8")) as {
         version: string;

@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { resolve, dirname, join } from "node:path";
@@ -399,6 +406,34 @@ describe("parseConfigFile", () => {
 });
 
 describe("runCheck", () => {
+  it("resolves a relative command from the scan root when cwd is elsewhere", async () => {
+    const scan = mkdtempSync(join(tmpdir(), "mcp-health-rel-run-"));
+    try {
+      mkdirSync(join(scan, "bin"));
+      const tool = join(scan, "bin", "server");
+      writeFileSync(tool, "#!/bin/sh\nexit 0\n");
+      chmodSync(tool, 0o755);
+      writeFileSync(
+        join(scan, "mcp.json"),
+        JSON.stringify({
+          mcpServers: { local: { command: "./bin/server" } },
+        }),
+      );
+      const report = await runCheck({
+        root: scan,
+        includeUserConfig: false,
+      });
+      const codes = report.servers.flatMap((server) =>
+        server.findings.map((finding) => finding.code),
+      );
+      expect(codes).not.toContain("COMMAND_NOT_FOUND");
+      expect(codes).toContain("HEALTHY");
+      expect(report.summary.fail).toBe(0);
+    } finally {
+      rmSync(scan, { recursive: true, force: true });
+    }
+  });
+
   it("reports healthy fixture without fails", async () => {
     const report = await runCheck({
       root: join(fixtures, "healthy"),
@@ -619,6 +654,95 @@ describe("resolveCommandOnPath", () => {
       expect(commandNeedsShell(join(dir, "npx.CMD"), "linux")).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a relative command from the scan root, not another directory", () => {
+    const scan = mkdtempSync(join(tmpdir(), "mcp-health-rel-scan-"));
+    const elsewhere = mkdtempSync(join(tmpdir(), "mcp-health-rel-else-"));
+    try {
+      mkdirSync(join(scan, "bin"));
+      const tool = join(scan, "bin", "server");
+      writeFileSync(tool, "#!/bin/sh\nexit 0\n");
+      chmodSync(tool, 0o755);
+      mkdirSync(join(elsewhere, "bin"));
+      writeFileSync(join(elsewhere, "bin", "server"), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(elsewhere, "bin", "server"), 0o755);
+
+      expect(
+        resolveCommandOnPath("./bin/server", { PATH: "/usr/bin" }, "linux", scan),
+      ).toBe(tool);
+      expect(
+        resolveCommandOnPath("bin/server", { PATH: "/usr/bin" }, "linux", scan),
+      ).toBe(tool);
+      expect(
+        resolveCommandOnPath(
+          "./bin/server",
+          { PATH: "/usr/bin" },
+          "linux",
+          elsewhere,
+        ),
+      ).toBe(join(elsewhere, "bin", "server"));
+      expect(
+        resolveCommandOnPath("./bin/missing", { PATH: "/usr/bin" }, "linux", scan),
+      ).toBeUndefined();
+    } finally {
+      rmSync(scan, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it("searches the working directory before PATH on Windows", () => {
+    const scan = mkdtempSync(join(tmpdir(), "mcp-health-win-cwd-"));
+    const pathDir = mkdtempSync(join(tmpdir(), "mcp-health-win-path-"));
+    try {
+      writeFileSync(join(scan, "tool.CMD"), "@echo off\r\n");
+      writeFileSync(join(pathDir, "tool.EXE"), "");
+      expect(
+        resolveCommandOnPath(
+          "tool",
+          { PATH: pathDir, PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+          "win32",
+          scan,
+        ),
+      ).toBe(join(scan, "tool.CMD"));
+    } finally {
+      rmSync(scan, { recursive: true, force: true });
+      rmSync(pathDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not search the working directory for a bare name on linux", () => {
+    const scan = mkdtempSync(join(tmpdir(), "mcp-health-linux-cwd-"));
+    try {
+      const tool = join(scan, "tool");
+      writeFileSync(tool, "#!/bin/sh\nexit 0\n");
+      chmodSync(tool, 0o755);
+      expect(
+        resolveCommandOnPath("tool", { PATH: "/usr/bin" }, "linux", scan),
+      ).toBeUndefined();
+    } finally {
+      rmSync(scan, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an empty PATH entry as the working directory", () => {
+    const scan = mkdtempSync(join(tmpdir(), "mcp-health-empty-path-"));
+    try {
+      const tool = join(scan, "tool");
+      writeFileSync(tool, "#!/bin/sh\nexit 0\n");
+      chmodSync(tool, 0o755);
+      expect(
+        resolveCommandOnPath("tool", { PATH: "/usr/bin:" }, "linux", scan),
+      ).toBe(tool);
+      expect(resolveCommandOnPath("tool", { PATH: "" }, "linux", scan)).toBe(
+        tool,
+      );
+      expect(
+        resolveCommandOnPath("tool", {}, "linux", scan),
+      ).toBeUndefined();
+    } finally {
+      rmSync(scan, { recursive: true, force: true });
     }
   });
 });
