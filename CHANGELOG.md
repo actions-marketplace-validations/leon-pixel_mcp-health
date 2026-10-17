@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-17
+
 ### Added
 
 - Discover Gemini CLI project `.gemini/settings.json` and user `~/.gemini/settings.json`. `GEMINI_CLI_HOME` selects `$GEMINI_CLI_HOME/.gemini/settings.json`. `mcpServers` uses the existing parser. A settings file with no `mcpServers` key is skipped. `--no-user` skips the user file. System settings are not scanned.
