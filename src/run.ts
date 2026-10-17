@@ -168,6 +168,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
 
     const { perServer, findings } = checkConfig(parsed, {
       strictVariables: options.strictVariables,
+      cwd: root,
     });
 
     if (

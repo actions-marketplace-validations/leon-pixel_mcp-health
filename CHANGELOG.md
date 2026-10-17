@@ -10,6 +10,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Fixed
 
 - Claude Code `projects` keys in `~/.claude.json` match the scan root when both paths are the same directory, including a symlink and macOS `/tmp` versus `/private/tmp`. A key for a different directory is still ignored. Trailing-slash and Windows case matching is unchanged.
+- A relative stdio command is resolved from the scan root, and the probe spawns that absolute path. A command that exists only in the process working directory is still `COMMAND_NOT_FOUND`.
+- On Windows, a bare command is searched in the scan root before `PATH`, with `PATHEXT`. An empty `PATH` entry is that directory on every platform. An unset `PATH` does not search it.
+- SARIF URIs and GitHub annotation `file` paths are relative to the workspace when the scan root is the process working directory or a subdirectory of it. A scan root outside that directory stays relative to itself.
 
 ### Changed
 
