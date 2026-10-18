@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { commandNeedsShell, resolveCommandOnPath } from "./check.js";
+import {
+  commandLookupEnv,
+  commandNeedsShell,
+  resolveCommandOnPath,
+} from "./check.js";
 import type { Finding, ParsedServer, Severity } from "./types.js";
 import {
   LEGACY_PROTOCOL_VERSION,
@@ -347,7 +351,7 @@ export async function probeStdioServer(
   const envRaw = server.raw.env as Record<string, string> | undefined;
   const resolved = resolveCommandOnPath(
     command,
-    process.env,
+    commandLookupEnv(envRaw),
     process.platform,
     options.cwd,
   );
