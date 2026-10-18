@@ -1,6 +1,6 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
@@ -52,16 +52,33 @@ export function commandNeedsShell(
   return platform === "win32" && /\.(cmd|bat)$/i.test(executable);
 }
 
+function findInDir(
+  dir: string,
+  names: string[],
+  platform: NodeJS.Platform,
+): string | undefined {
+  for (const name of names) {
+    const full = join(dir, name);
+    if (isRunnable(full, platform)) return full;
+  }
+  return undefined;
+}
+
 /**
  * Resolve a command the way the host shell would.
  * On Windows, `npx` is `npx.cmd` / `npx.exe` and is found via PATHEXT.
- * Returns an absolute path when the command is on PATH.
+ * A relative command is resolved from `cwd` (the scan root).
+ * On Windows that directory is searched before PATH.
+ * An empty PATH entry means that directory on every platform.
+ * Returns an absolute path when the command is found.
  */
 export function resolveCommandOnPath(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  cwd?: string,
 ): string | undefined {
+  const base = cwd && cwd.trim() ? resolve(cwd) : process.cwd();
   const extensions = pathExtensions(env, platform);
   const names =
     platform === "win32" && !hasPathExtension(command, extensions)
@@ -72,24 +89,32 @@ export function resolveCommandOnPath(
     isAbsolute(command) || command.includes("/") || command.includes("\\");
   if (direct) {
     for (const name of names) {
-      if (isRunnable(name, platform)) return name;
+      const candidate = isAbsolute(name) ? name : join(base, name);
+      if (isRunnable(candidate, platform)) return candidate;
     }
     return undefined;
   }
 
-  const pathEnv = env.PATH ?? "";
-  for (const dir of pathEnv.split(pathDelimiter(platform))) {
-    if (!dir) continue;
-    for (const name of names) {
-      const full = join(dir, name);
-      if (isRunnable(full, platform)) return full;
-    }
+  if (platform === "win32") {
+    const fromCwd = findInDir(base, names, platform);
+    if (fromCwd) return fromCwd;
+  }
+
+  if (env.PATH === undefined) return undefined;
+  for (const dir of env.PATH.split(pathDelimiter(platform))) {
+    const fromDir = dir
+      ? findInDir(dir, names, platform)
+      : findInDir(base, names, platform);
+    if (fromDir) return fromDir;
   }
   return undefined;
 }
 
-function commandOnPath(command: string): boolean {
-  return resolveCommandOnPath(command) !== undefined;
+function commandOnPath(command: string, cwd?: string): boolean {
+  return (
+    resolveCommandOnPath(command, process.env, process.platform, cwd) !==
+    undefined
+  );
 }
 
 function unresolvedTokens(value: string): string[] {
@@ -186,25 +211,100 @@ export function isVersionPinned(pkg: string): boolean {
   return /^[^@]+@.+$/.test(pkg);
 }
 
-export function extractNpxPackage(command: string, args: string[]): string | undefined {
-  const cleaned = args.filter((a) => a !== "-y" && a !== "--yes" && a !== "--");
-  if (command === "npx" || command.endsWith("/npx") || command.endsWith("\\npx")) {
-    const pkg = cleaned.find((a) => !a.startsWith("-"));
-    return pkg;
-  }
+/** `npx`, `npx.cmd`, and `C:\\path\\npx.exe` all share one launcher name. */
+function commandBasename(command: string): string {
   const base = command.split(/[/\\]/).pop() ?? command;
-  if (base === "npx" || base === "npx.cmd" || base === "npx.exe") {
-    const pkg = cleaned.find((a) => !a.startsWith("-"));
-    return pkg;
-  }
-  if (command === "npm" || base === "npm" || base === "npm.cmd" || base === "npm.exe") {
-    // npm exec [-y] pkg
-    const execIdx = cleaned.indexOf("exec");
-    if (execIdx === -1) return undefined;
-    const rest = cleaned.slice(execIdx + 1).filter((a) => !a.startsWith("-"));
-    return rest[0];
+  return base.replace(/\.(cmd|exe)$/i, "");
+}
+
+const PACKAGE_RUNNERS = new Set(["npx", "npm", "uvx", "bunx", "pnpm", "yarn"]);
+
+/**
+ * Flags whose next argument is not the package.
+ * `uvx -p` is a Python version. `npx -p` is the package, so it is not listed here.
+ */
+const NON_PACKAGE_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  uvx: new Set([
+    "--with",
+    "--with-editable",
+    "--with-requirements",
+    "--python",
+    "-p",
+    "--index",
+    "--default-index",
+    "--index-url",
+    "--extra-index-url",
+    "--find-links",
+    "--config-file",
+    "--python-preference",
+    "--keyring-provider",
+    "--index-strategy",
+    "--prerelease",
+  ]),
+  pnpm: new Set(["--config", "--reporter", "--dir", "-C"]),
+};
+
+function explicitFromPackage(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") break;
+    if (arg === "--from") {
+      const next = args[i + 1];
+      if (next && next !== "--" && !next.startsWith("-")) return next;
+      continue;
+    }
+    if (arg.startsWith("--from=")) {
+      const value = arg.slice("--from=".length);
+      if (value) return value;
+    }
   }
   return undefined;
+}
+
+function firstPackageArg(args: string[], launcher: string): string | undefined {
+  const skipValue = NON_PACKAGE_VALUE_FLAGS[launcher];
+  const skipSubcommand = launcher === "pnpm" || launcher === "yarn";
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--" || arg === "--from") continue;
+    if (arg.startsWith("--from=")) continue;
+    if (skipValue?.has(arg)) {
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    if (skipSubcommand && (arg === "dlx" || arg === "exec")) continue;
+    return arg;
+  }
+  return undefined;
+}
+
+/**
+ * Package spec launched by npx, npm exec, uvx, bunx, pnpm dlx, pnpm exec, or yarn dlx.
+ * `--from <spec>` wins. Flags (`-y`, `--yes`, `--quiet`) and the `dlx` / `exec`
+ * subcommands are not the package.
+ */
+export function extractNpxPackage(command: string, args: string[]): string | undefined {
+  const base = commandBasename(command);
+  if (!PACKAGE_RUNNERS.has(base)) return undefined;
+
+  let rest = args;
+  if (base === "npm") {
+    const execIdx = rest.indexOf("exec");
+    if (execIdx === -1) return undefined;
+    rest = rest.slice(execIdx + 1);
+  } else if (base === "pnpm") {
+    const idx = rest.findIndex((arg) => arg === "dlx" || arg === "exec");
+    if (idx === -1) return undefined;
+    rest = rest.slice(idx + 1);
+  } else if (base === "yarn") {
+    const idx = rest.indexOf("dlx");
+    if (idx === -1) return undefined;
+    rest = rest.slice(idx + 1);
+  }
+
+  return explicitFromPackage(rest) ?? firstPackageArg(rest, base);
 }
 
 function worst(a: Severity, b: Severity): Severity {
@@ -214,7 +314,7 @@ function worst(a: Severity, b: Severity): Severity {
 
 export function checkConfig(
   file: ConfigFile,
-  options: { strictVariables?: boolean } = {},
+  options: { strictVariables?: boolean; cwd?: string } = {},
 ): {
   findings: Finding[];
   perServer: Map<string, { status: Severity; findings: Finding[] }>;
@@ -349,7 +449,7 @@ export function checkConfig(
       const { command, args } = server.transport;
       const commandUnresolved = unresolvedTokens(command).length > 0;
 
-      if (!commandUnresolved && !commandOnPath(command)) {
+      if (!commandUnresolved && !commandOnPath(command, options.cwd)) {
         local.push({
           severity: "fail",
           code: "COMMAND_NOT_FOUND",
@@ -359,25 +459,20 @@ export function checkConfig(
         });
       }
 
-      const base = command.split(/[/\\]/).pop() ?? command;
-      if (
-        !commandUnresolved &&
-        (base === "npx" ||
-          base === "npx.cmd" ||
-          base === "npx.exe" ||
-          base === "npm" ||
-          base === "npm.cmd" ||
-          base === "npm.exe")
-      ) {
+      const base = commandBasename(command);
+      if (!commandUnresolved && PACKAGE_RUNNERS.has(base)) {
         const pkg = extractNpxPackage(command, args);
         if (!pkg) {
-          local.push({
-            severity: "warn",
-            code: "NPX_NO_PACKAGE",
-            message: "npx/npm exec invoked without a clear package argument",
-            server: server.name,
-            file: file.path,
-          });
+          // pnpm/yarn without dlx or exec are not package launches.
+          if (base === "npx" || base === "npm") {
+            local.push({
+              severity: "warn",
+              code: "NPX_NO_PACKAGE",
+              message: "npx/npm exec invoked without a clear package argument",
+              server: server.name,
+              file: file.path,
+            });
+          }
         } else if (!isVersionPinned(pkg)) {
           local.push({
             severity: "warn",

@@ -34,12 +34,19 @@ export type Finding = {
   file?: string;
 };
 
+export type ConfigScope = "project" | "user";
+
 export type ServerReport = {
   name: string;
   file: string;
   transport: ServerTransport["kind"];
   status: Severity;
   findings: Finding[];
+  /**
+   * `project` for a repository config, `user` for a user-level file.
+   * Omitted on a scan-level row such as `NO_CONFIG`.
+   */
+  scope?: ConfigScope;
 };
 
 export type HealthReport = {

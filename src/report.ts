@@ -37,8 +37,12 @@ export function formatHuman(report: HealthReport): string {
   }
 
   for (const server of report.servers) {
+    const origin =
+      server.scope === "project" || server.scope === "user"
+        ? `${server.scope}  `
+        : "";
     lines.push(
-      `[${icons[server.status]}] ${server.name}  (${server.transport})  ${server.file}`,
+      `[${icons[server.status]}] ${server.name}  (${server.transport})  ${origin}${server.file}`,
     );
     for (const finding of server.findings) {
       lines.push(

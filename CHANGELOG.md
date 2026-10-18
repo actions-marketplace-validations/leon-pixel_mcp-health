@@ -7,6 +7,26 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-17
+
+### Added
+
+- Discover Gemini CLI project `.gemini/settings.json` and user `~/.gemini/settings.json`. `GEMINI_CLI_HOME` selects `$GEMINI_CLI_HOME/.gemini/settings.json`. `mcpServers` uses the existing parser. A settings file with no `mcpServers` key is skipped. `--no-user` skips the user file. System settings are not scanned.
+- Discover the VS Code user `mcp.json` (`servers`) and the Copilot user `mcp-config.json` (`mcpServers`). VS Code uses `~/Library/Application Support/Code/User/mcp.json` on macOS, `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config/Code/User/mcp.json`) on Linux, and `%APPDATA%/Code/User/mcp.json` on Windows. `COPILOT_HOME` replaces `~/.copilot`. `--no-user` skips both. A missing file is skipped. Insiders and VSCodium are not scanned.
+- Warn `UNPINNED_PACKAGE` when `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, or `yarn dlx` launches a package without a version. `name@version` and `uvx --from name@version` do not warn. `--online` looks up that same package. A registry miss stays `NPM_LOOKUP_FAILED`.
+
+### Fixed
+
+- Claude Code `projects` keys in `~/.claude.json` match the scan root when both paths are the same directory, including a symlink and macOS `/tmp` versus `/private/tmp`. A key for a different directory is still ignored. Trailing-slash and Windows case matching is unchanged.
+- A relative stdio command is resolved from the scan root, and the probe spawns that absolute path. A command that exists only in the process working directory is still `COMMAND_NOT_FOUND`.
+- On Windows, a bare command is searched in the scan root before `PATH`, with `PATHEXT`. An empty `PATH` entry is that directory on every platform. An unset `PATH` does not search it.
+- SARIF URIs and GitHub annotation `file` paths are relative to the workspace when the scan root is the process working directory or a subdirectory of it. A scan root outside that directory stays relative to itself.
+
+### Changed
+
+- A scan with no MCP config still exits 1. The `NO_CONFIG` message names a project file to add (`.cursor/mcp.json` or `.vscode/mcp.json`) and `--allow-missing` to exit 0 when the repository is supposed to have no MCP config.
+- Human-readable server rows say `project` or `user`. JSON keeps the file path and adds `scope`. Summary counts are unchanged.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added

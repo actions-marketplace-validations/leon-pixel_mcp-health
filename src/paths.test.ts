@@ -67,13 +67,17 @@ describe("readme release lines", () => {
   it("keeps the published release and the package version consistent", () => {
     const pkg = require("../package.json") as { version: string };
     const readme = readFileSync(join(repo, "README.md"), "utf8");
-    expect(pkg.version).toBe("1.3.0");
-    expect(readme).toContain("tracks the published 1.3.0 release");
+    expect(pkg.version).toBe("1.4.0");
+    expect(readme).toContain("tracks the published 1.4.0 release");
     expect(readme).toContain(
-      "`@leon-pixel/mcp-health@1.3.0` is the current npm `latest`.",
+      "`@leon-pixel/mcp-health@1.4.0` is the current npm `latest`.",
     );
     expect(readme).toContain(
-      "This repository is `1.3.0` in `package.json`, and the `v1.3.0` tag is published and `v1` points to it.",
+      "This repository is `1.4.0` in `package.json`, and the `v1.4.0` tag is published and `v1` points to it.",
+    );
+    expect(readme).not.toContain("tracks the published 1.3.0 release");
+    expect(readme).not.toContain(
+      "`@leon-pixel/mcp-health@1.3.0` is the current npm `latest`",
     );
     expect(readme).not.toContain("tracks the published 1.2.1 release");
     expect(readme).not.toContain(
@@ -106,11 +110,14 @@ describe("--no-user help", () => {
     const help = result.stdout.replace(/\s+/g, " ");
     for (const client of [
       "Cursor",
+      "VS Code",
       "Claude Code",
       "Claude Desktop",
       "Continue",
       "Junie",
       "Cline",
+      "Gemini CLI",
+      "Copilot",
       "Windsurf",
       "Devin",
       "Zed",
@@ -121,25 +128,27 @@ describe("--no-user help", () => {
   });
 });
 
-describe("1.3.0 changelog", () => {
+describe("1.4.0 changelog", () => {
   it("covers the unreleased fixes and the new clients", () => {
     const pkg = require("../package.json") as { version: string };
     const notes = changelogSection(
       readFileSync(join(repo, "CHANGELOG.md"), "utf8"),
       pkg.version,
     );
-    expect(notes.startsWith("## [1.3.0]")).toBe(true);
+    expect(pkg.version).toBe("1.4.0");
+    expect(notes.startsWith("## [1.4.0] - 2026-10-17")).toBe(true);
+    expect(notes).toContain(".gemini/settings.json");
+    expect(notes).toContain("GEMINI_CLI_HOME");
+    expect(notes).toContain("Copilot");
+    expect(notes).toContain("COPILOT_HOME");
+    expect(notes).toContain("uvx");
+    expect(notes).toContain("UNPINNED_PACKAGE");
     expect(notes).toContain("~/.claude.json");
-    expect(notes).toContain("Continue");
-    expect(notes).toContain("Junie");
-    expect(notes).toContain("Cline");
-    expect(notes).toContain("CLAUDE_CONFIG_DIR");
-    expect(notes).toContain("CLINE_MCP_SETTINGS_PATH");
-    expect(notes).toContain("CLINE_DATA_DIR");
-    expect(notes).toContain("An empty server map still exits 1");
-    expect(notes).toContain("--probe-timeout");
-    expect(notes).toContain("MSIX");
-    expect(notes).not.toContain("## [1.2.1]");
+    expect(notes).toContain("COMMAND_NOT_FOUND");
+    expect(notes).toContain("SARIF");
+    expect(notes).toContain("--allow-missing");
+    expect(notes).toContain("`project` or `user`");
+    expect(notes).not.toContain("## [1.3.0]");
   });
 });
 

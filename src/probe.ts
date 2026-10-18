@@ -345,7 +345,12 @@ export async function probeStdioServer(
 
   const { command, args } = server.transport;
   const envRaw = server.raw.env as Record<string, string> | undefined;
-  const resolved = resolveCommandOnPath(command);
+  const resolved = resolveCommandOnPath(
+    command,
+    process.env,
+    process.platform,
+    options.cwd,
+  );
   const executable = resolved ?? command;
   const child = spawn(executable, args, {
     env: redactEnv(envRaw),

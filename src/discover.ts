@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
+import type { ConfigScope } from "./types.js";
 
 const PROJECT_CANDIDATES = [
   ".cursor/mcp.json",
@@ -9,6 +10,7 @@ const PROJECT_CANDIDATES = [
   ".vscode/mcp.json",
   ".claude/settings.json",
   ".claude/settings.local.json",
+  ".gemini/settings.json",
   ".junie/mcp/mcp.json",
   ".continue/config.yaml",
   ".windsurf/mcp_config.json",
@@ -101,6 +103,41 @@ function zedUserPaths(options: LocateOptions = {}): string[] {
   return [join(xdg, "zed", "settings.json")];
 }
 
+/**
+ * Gemini CLI user settings.
+ * `GEMINI_CLI_HOME` replaces the home directory; the file is still `.gemini/settings.json`.
+ */
+function geminiUserPath(options: LocateOptions = {}): string {
+  const { home, env } = locate(options);
+  const geminiHome = env.GEMINI_CLI_HOME?.trim();
+  return join(geminiHome || home, ".gemini", "settings.json");
+}
+
+/**
+ * VS Code user MCP config opened by "MCP: Open User Configuration".
+ * Insiders and VSCodium use different directories and are not scanned.
+ */
+function vscodeUserMcpPath(options: LocateOptions = {}): string {
+  const { platform: p, home, env } = locate(options);
+  if (p === "darwin") {
+    return join(home, "Library", "Application Support", "Code", "User", "mcp.json");
+  }
+  if (p === "win32") {
+    const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
+    return join(appData, "Code", "User", "mcp.json");
+  }
+  const xdg = env.XDG_CONFIG_HOME ?? join(home, ".config");
+  return join(xdg, "Code", "User", "mcp.json");
+}
+
+/** Copilot portable user config. `COPILOT_HOME` replaces `~/.copilot`. */
+function copilotUserPath(options: LocateOptions = {}): string {
+  const { home, env } = locate(options);
+  const copilotHome = env.COPILOT_HOME?.trim();
+  if (copilotHome) return join(copilotHome, "mcp-config.json");
+  return join(home, ".copilot", "mcp-config.json");
+}
+
 /** `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is set. */
 function claudeCodeUserPath(options: LocateOptions = {}): string {
   const { platform: p, home, env } = locate(options);
@@ -147,13 +184,46 @@ function continueBlockFiles(root: string): string[] {
   return files;
 }
 
+/** Stable identity for labeling a config file as project or user. */
+function configPathIdentity(input: string): string {
+  let normalized = resolve(input);
+  if (process.platform === "win32") normalized = normalized.toLowerCase();
+  try {
+    if (existsSync(normalized)) {
+      normalized = realpathSync(normalized);
+      if (process.platform === "win32") normalized = normalized.toLowerCase();
+    }
+  } catch {
+    // Keep the resolved path when the file cannot be canonicalized.
+  }
+  return normalized.replace(/\\/g, "/");
+}
+
+/**
+ * `user` when `file` is one of the user-level configs (`~/.cursor/mcp.json`,
+ * `~/.claude.json`, and the rest). Every other config file is `project`.
+ */
+export function configFileScope(
+  file: string,
+  options: LocateOptions = {},
+): ConfigScope {
+  const wanted = configPathIdentity(file);
+  for (const entry of userLevelPaths(options)) {
+    if (configPathIdentity(entry) === wanted) return "user";
+  }
+  return "project";
+}
+
 function userLevelPaths(options: LocateOptions = {}): string[] {
   const { home } = locate(options);
   return [
     join(home, ".cursor", "mcp.json"),
+    vscodeUserMcpPath(options),
+    copilotUserPath(options),
     join(home, ".claude", "settings.json"),
     claudeCodeUserPath(options),
     ...claudeDesktopPaths(options),
+    geminiUserPath(options),
     ...windsurfUserPaths(options),
     ...zedUserPaths(options),
     join(home, ".codex", "config.toml"),
@@ -191,6 +261,9 @@ export const __testing = {
   claudeDesktopPaths,
   claudeCodeUserPath,
   clineUserPath,
+  geminiUserPath,
+  vscodeUserMcpPath,
+  copilotUserPath,
   userLevelPaths,
   PROJECT_CANDIDATES,
 };
