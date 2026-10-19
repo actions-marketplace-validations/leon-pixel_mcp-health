@@ -8,6 +8,7 @@ const PROJECT_CANDIDATES = [
   "mcp.json",
   ".mcp.json",
   ".vscode/mcp.json",
+  ".github/mcp.json",
   ".claude/settings.json",
   ".claude/settings.local.json",
   ".gemini/settings.json",
