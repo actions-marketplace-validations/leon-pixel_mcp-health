@@ -171,6 +171,7 @@ repos:
 |--------|------|--------|
 | Cursor | `.cursor/mcp.json`, `mcp.json`, `.mcp.json` | `mcpServers` |
 | VS Code | `.vscode/mcp.json` | `servers` |
+| Copilot | `.github/mcp.json` | `mcpServers`, or a bare object whose keys are server names. `command` and `args` are stdio. `url` is HTTP. `type: "local"` still uses `command` and `args`. `tools` is an allowlist |
 | Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | `mcpServers` |
 | Gemini CLI | `.gemini/settings.json` | `mcpServers`. A file with no `mcpServers` key is skipped |
 | Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |

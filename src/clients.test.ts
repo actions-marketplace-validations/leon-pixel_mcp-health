@@ -851,6 +851,166 @@ describe("Gemini CLI settings.json", () => {
   });
 });
 
+describe("Copilot project .github/mcp.json", () => {
+  function writeJson(file: string, body: unknown) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(body));
+  }
+
+  it("parses a mcpServers object with the existing parser", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-github-mcp-"));
+    const file = join(root, ".github", "mcp.json");
+    try {
+      expect(__testing.PROJECT_CANDIDATES).toContain(".github/mcp.json");
+      writeJson(file, {
+        mcpServers: {
+          playwright: {
+            type: "local",
+            command: "node",
+            args: ["--version"],
+            tools: ["*"],
+          },
+          remote: { url: "https://example.com/mcp" },
+        },
+      });
+
+      const parsed = parseConfigFile(file);
+      expect(parsed.format).toBe("mcpServers");
+      expect(parsed.servers.map((server) => server.name).sort()).toEqual([
+        "playwright",
+        "remote",
+      ]);
+      expect(
+        parsed.servers.find((server) => server.name === "playwright")?.transport,
+      ).toEqual({ kind: "stdio", command: "node", args: ["--version"] });
+      expect(
+        parsed.servers.find((server) => server.name === "remote")?.transport,
+      ).toEqual({ kind: "http", url: "https://example.com/mcp" });
+
+      const report = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(discoverConfigPaths(root, { includeUserConfig: false })).toEqual([file]);
+      expect(names(report).sort()).toEqual(["playwright", "remote"]);
+      expect(report.servers.every((server) => server.scope === "project")).toBe(true);
+      expect(codes(report)).not.toContain("NO_CONFIG");
+      expect(codes(report)).not.toContain("NO_TRANSPORT");
+      expect(codes(report)).not.toContain("FILE_NOT_FOUND");
+      expect(report.summary.fail).toBe(0);
+
+      writeJson(file, {
+        mcpServers: { bad: { command: "node", env: { PORT: 1 } } },
+      });
+      const invalid = parseConfigFile(file);
+      expect(invalid.format).toBe("invalid");
+      const failed = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(failed)).toContain("SCHEMA_ERROR");
+      expect(codes(failed)).not.toContain("NO_CONFIG");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("parses a bare server map: local command is stdio and url is HTTP", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-github-mcp-bare-"));
+    const file = join(root, ".github", "mcp.json");
+    try {
+      writeJson(file, {
+        playwright: {
+          type: "local",
+          command: "node",
+          args: ["--version"],
+          tools: ["*"],
+        },
+        context7: {
+          type: "http",
+          url: "https://mcp.context7.com/mcp",
+          tools: ["resolve-library-id"],
+        },
+      });
+
+      const parsed = parseConfigFile(file);
+      expect(parsed.format).toBe("mcpServers");
+      const playwright = parsed.servers.find((server) => server.name === "playwright");
+      const context7 = parsed.servers.find((server) => server.name === "context7");
+      expect(playwright?.transport).toEqual({
+        kind: "stdio",
+        command: "node",
+        args: ["--version"],
+      });
+      expect(playwright?.raw.tools).toEqual(["*"]);
+      expect(context7?.transport).toEqual({
+        kind: "http",
+        url: "https://mcp.context7.com/mcp",
+      });
+
+      const report = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(report.files).toEqual([file]);
+      expect(names(report).sort()).toEqual(["context7", "playwright"]);
+      expect(report.servers.every((server) => server.scope === "project")).toBe(true);
+      expect(codes(report)).toContain("HEALTHY");
+      expect(codes(report)).not.toContain("NO_TRANSPORT");
+      expect(codes(report)).not.toContain("NO_CONFIG");
+      expect(report.summary.fail).toBe(0);
+
+      const cursorFile = join(root, "mcp.json");
+      writeJson(cursorFile, {
+        playwright: { type: "local", command: "node", args: ["--version"] },
+      });
+      expect(parseConfigFile(cursorFile).format).toBe("none");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats .github/mcp.json as the only config under --no-user and skips a missing file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-github-mcp-only-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-github-mcp-only-home-"));
+    const file = join(root, ".github", "mcp.json");
+    try {
+      const missing = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(discoverConfigPaths(root, { includeUserConfig: false })).toEqual([]);
+      expect(codes(missing)).toEqual(["NO_CONFIG"]);
+      expect(codes(missing)).not.toContain("FILE_NOT_FOUND");
+      expect(missing.summary.fail).toBe(0);
+
+      writeJson(file, {
+        playwright: {
+          type: "local",
+          command: "npx",
+          args: ["@playwright/mcp@latest"],
+          tools: ["*"],
+        },
+      });
+      const found = discoverConfigPaths(root, {
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(found).toEqual([file]);
+      const report = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(report.files).toEqual([file]);
+      expect(names(report)).toEqual(["playwright"]);
+      expect(report.servers[0]?.scope).toBe("project");
+      expect(report.servers[0]?.transport).toBe("stdio");
+      expect(codes(report)).not.toContain("NO_CONFIG");
+      expect(codes(report)).not.toContain("NO_TRANSPORT");
+      expect(codes(report)).not.toContain("FILE_NOT_FOUND");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("VS Code user mcp.json and Copilot mcp-config.json", () => {
   const vscodeSecret = "vscode-user-secret-do-not-print";
   const copilotSecret = "copilot-user-secret-do-not-print";
