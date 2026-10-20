@@ -15,6 +15,7 @@ import {
 } from "./check.js";
 import {
   fetchNpmLatest,
+  isFloatingPin,
   isRangePin,
   isVersionDrift,
   splitPackageSpec,
@@ -255,7 +256,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
               file: path,
             });
             result.status = worst(result.status, "warn");
-          } else if (!version) {
+          } else if (!version || isFloatingPin(version)) {
             result.findings.push({
               severity: "warn",
               code: "NPM_LATEST",

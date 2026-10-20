@@ -6,6 +6,7 @@ export {
   isVersionPinned,
   extractNpxPackage,
   resolveCommandOnPath,
+  commandLookupEnv,
   commandNeedsShell,
 } from "./check.js";
 export { expandServerVariables, expandString } from "./vars.js";
@@ -17,6 +18,7 @@ export {
   splitPackageSpec,
   isVersionDrift,
   isRangePin,
+  isFloatingPin,
 } from "./npm.js";
 export {
   VERSION,

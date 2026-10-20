@@ -9,10 +9,17 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- Expand Claude Code `${VAR}` and `${VAR:-default}` in command, args, env, url, and headers, and expand `${CLAUDE_PROJECT_DIR}` to the scan root. An unset `${VAR}` with no default is a warning, the same as an unset `${env:NAME}`. A URL that still contains `${…}` is not also `BAD_URL`. Expanded values are not printed.
+- `name@latest`, `name@next`, and `name@*` are `UNPINNED_PACKAGE`. `--online` reports `NPM_LATEST` for those tags instead of calling them pinned. Exact versions and semver ranges stay pinned.
+- Stdio command lookup uses the server's `env.PATH` when that value has no unresolved `${…}`. The probe spawns the absolute path found there. On Windows, `Path` is the same key. A PATH that still contains `${…}` stays on the variable check.
 - Gemini CLI `httpUrl` is a remote URL. It wins over `url` and `command`.
 - Doc placeholders in env, headers, and Cursor `auth` warn (`PLACEHOLDER_ENV`, `PLACEHOLDER_HEADER`).
 - An unset Gemini CLI `$NAME` env reference warns `UNRESOLVED_VARIABLE`. On Windows, `%NAME%` does too. A set value is not printed.
 - Claude Code `.mcp.json` and `~/.claude.json`: a `url` with no `type` is `MISSING_TRANSPORT_TYPE`. `type: "sdk"` is skipped instead of `NO_TRANSPORT`.
+
+### Changed
+
+- The install examples run `check --no-user`. Omitting the flag also reads user-level configs, and those rows are labeled `user`.
 
 ## [1.4.0] - 2026-10-17
 
