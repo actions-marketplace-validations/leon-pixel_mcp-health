@@ -314,7 +314,11 @@ function worst(a: Severity, b: Severity): Severity {
 
 export function checkConfig(
   file: ConfigFile,
-  options: { strictVariables?: boolean; cwd?: string } = {},
+  options: {
+    strictVariables?: boolean;
+    cwd?: string;
+    platform?: NodeJS.Platform;
+  } = {},
 ): {
   findings: Finding[];
   perServer: Map<string, { status: Severity; findings: Finding[] }>;
@@ -387,6 +391,22 @@ export function checkConfig(
         severity: "ok",
         code: "EXTENSION_SERVER",
         message: "Extension-provided server; the extension launches it",
+        server: server.name,
+        file: file.path,
+      });
+      findings.push(...local);
+      perServer.set(server.name, { status: "ok", findings: local });
+      continue;
+    }
+
+    if (
+      isClaudeCodeEntryFile(file.path) &&
+      claudeEntryType(server.raw.type) === "sdk"
+    ) {
+      local.push({
+        severity: "ok",
+        code: "SDK_SERVER",
+        message: 'Claude Code skips type "sdk"; only an SDK host starts it',
         server: server.name,
         file: file.path,
       });
@@ -495,17 +515,29 @@ export function checkConfig(
       }
     }
 
+    if (
+      isClaudeCodeEntryFile(file.path) &&
+      server.transport.kind === "http" &&
+      claudeEntryType(server.raw.type) === ""
+    ) {
+      local.push({
+        severity: "fail",
+        code: "MISSING_TRANSPORT_TYPE",
+        message:
+          'Claude Code skips a url entry with no type. Add "type": "http", "sse", or "ws".',
+        server: server.name,
+        file: file.path,
+      });
+    }
+
     const env = server.raw.env;
-    if (env && typeof env === "object") {
-      for (const [key, value] of Object.entries(
-        env as Record<string, string>,
-      )) {
-        if (
-          typeof value === "string" &&
-          (value.includes("YOUR_") ||
-            value === "" ||
-            value.toLowerCase() === "changeme")
-        ) {
+    if (env && typeof env === "object" && !Array.isArray(env)) {
+      const unsetRefs: string[] = [];
+      const gemini = isGeminiSettings(file.path);
+      const platform = options.platform ?? process.platform;
+      for (const [key, value] of Object.entries(env)) {
+        if (typeof value !== "string") continue;
+        if (isPlaceholder(value)) {
           local.push({
             severity: "warn",
             code: "PLACEHOLDER_ENV",
@@ -514,8 +546,28 @@ export function checkConfig(
             file: file.path,
           });
         }
+        if (!gemini) continue;
+        for (const ref of unsetGeminiEnvRefs(value, process.env, platform)) {
+          const label = `${ref} in env.${key}`;
+          if (!unsetRefs.includes(label)) unsetRefs.push(label);
+        }
+      }
+      if (unsetRefs.length > 0) {
+        const strict = Boolean(options.strictVariables);
+        local.push({
+          severity: strict ? "fail" : "warn",
+          code: "UNRESOLVED_VARIABLE",
+          message: `Unset Gemini env reference ${unsetRefs.join("; ")}. Gemini CLI substitutes an empty string.${
+            strict ? " --strict-variables is set" : ""
+          }`,
+          server: server.name,
+          file: file.path,
+        });
       }
     }
+
+    warnPlaceholderFields(server, file.path, local, "headers", "Header");
+    warnPlaceholderFields(server, file.path, local, "auth", "Auth");
 
     const bearer = server.raw.bearerTokenEnvVar;
     const authEnvNames: string[] = [];
@@ -557,4 +609,94 @@ export function checkConfig(
   }
 
   return { findings, perServer };
+}
+
+/** `.mcp.json` and `~/.claude.json`, the files Claude Code reads as MCP JSON. */
+function isClaudeCodeEntryFile(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".mcp.json" ||
+    normalized.endsWith("/.mcp.json") ||
+    normalized === ".claude.json" ||
+    normalized.endsWith("/.claude.json")
+  );
+}
+
+function isGeminiSettings(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".gemini/settings.json" ||
+    normalized.endsWith("/.gemini/settings.json")
+  );
+}
+
+function claudeEntryType(type: unknown): string {
+  return typeof type === "string" ? type.trim().toLowerCase() : "";
+}
+
+/**
+ * Doc placeholders copied from Cursor, Gemini CLI, Zed, and Claude Code.
+ * `your-company` is a real prefix and is not a match.
+ */
+export function isPlaceholder(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (trimmed.includes("YOUR_") || trimmed.includes("REPLACE_")) return true;
+  if (trimmed.toLowerCase() === "changeme") return true;
+  const withoutBearer = trimmed.replace(/^bearer\s+/i, "").trim();
+  if (withoutBearer !== trimmed) return isPlaceholder(withoutBearer);
+  if (/^<[^<>\s]+>$/.test(trimmed)) return true;
+  return /^your[-_](?:key|token|api[-_]token|secret|password|client[-_]secret|client[-_]id|oauth[-_]client[-_]id)(?:[-_]here)?$/i.test(
+    trimmed,
+  );
+}
+
+/**
+ * Gemini CLI `$NAME` references in an env value, plus Windows `%NAME%`.
+ * A set variable is omitted. The value is never returned.
+ * `${...}` is left to the braced-variable check.
+ */
+export function unsetGeminiEnvRefs(
+  value: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string[] {
+  const refs: string[] = [];
+  const add = (ref: string, name: string) => {
+    if (refs.includes(ref)) return;
+    const found = lookupEnv(name, env, platform);
+    if (found === undefined) refs.push(ref);
+  };
+  for (const match of value.matchAll(/(?<!\{)\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    const name = match[1];
+    if (name) add(`$${name}`, name);
+  }
+  if (platform === "win32") {
+    for (const match of value.matchAll(/%([A-Za-z_][A-Za-z0-9_]*)%/g)) {
+      const name = match[1];
+      if (name) add(`%${name}%`, name);
+    }
+  }
+  return refs;
+}
+
+function warnPlaceholderFields(
+  server: ParsedServer,
+  file: string,
+  local: Finding[],
+  field: "headers" | "auth",
+  label: "Header" | "Auth",
+): void {
+  const record = server.raw[field];
+  if (!record || typeof record !== "object" || Array.isArray(record)) return;
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== "string" || !isPlaceholder(value)) continue;
+    local.push({
+      severity: "warn",
+      code: "PLACEHOLDER_HEADER",
+      message: `${label} ${key} looks like a placeholder`,
+      server: server.name,
+      file,
+    });
+  }
 }

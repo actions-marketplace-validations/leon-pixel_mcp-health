@@ -7,6 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini CLI `httpUrl` is a remote URL. It wins over `url` and `command`.
+- Doc placeholders in env, headers, and Cursor `auth` warn (`PLACEHOLDER_ENV`, `PLACEHOLDER_HEADER`).
+- An unset Gemini CLI `$NAME` env reference warns `UNRESOLVED_VARIABLE`. On Windows, `%NAME%` does too. A set value is not printed.
+- Claude Code `.mcp.json` and `~/.claude.json`: a `url` with no `type` is `MISSING_TRANSPORT_TYPE`. `type: "sdk"` is skipped instead of `NO_TRANSPORT`.
+
 ## [1.4.0] - 2026-10-17
 
 ### Added

@@ -17,6 +17,8 @@ const ServerEntrySchema = z
     command: z.union([z.string(), CommandObjectSchema]).optional(),
     args: z.array(z.string()).optional(),
     url: z.string().optional(),
+    /** Gemini CLI streamable HTTP endpoint. Wins over `url` and `command`. */
+    httpUrl: z.string().optional(),
     serverUrl: z.string().optional(),
     type: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
@@ -55,7 +57,9 @@ export type ParseOptions = {
 };
 
 function httpUrl(entry: ServerEntry): string | undefined {
-  const url = entry.url?.trim() || entry.serverUrl?.trim();
+  // Gemini CLI: httpUrl, then url, then command. serverUrl is Windsurf's name for url.
+  const url =
+    entry.httpUrl?.trim() || entry.url?.trim() || entry.serverUrl?.trim();
   return url || undefined;
 }
 
