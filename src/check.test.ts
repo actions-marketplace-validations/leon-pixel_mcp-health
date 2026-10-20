@@ -1168,12 +1168,17 @@ describe("Claude ${VAR} references", () => {
       expect(codesFor(set, "project-bin")).toContain("HEALTHY");
 
       expect(codesFor(set, "input-url")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(set, "input-url")).toContain("MISSING_TRANSPORT_TYPE");
       expect(codesFor(set, "input-url")).not.toContain("BAD_URL");
+      const inputUrl = set.servers.find((server) => server.name === "input-url");
       expect(
-        set.servers.find((server) => server.name === "input-url")?.status,
+        inputUrl?.findings.find((finding) => finding.code === "UNRESOLVED_VARIABLE")
+          ?.severity,
       ).toBe("warn");
+      expect(inputUrl?.status).toBe("fail");
 
       expect(codesFor(set, "env-in-url")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(set, "env-in-url")).toContain("MISSING_TRANSPORT_TYPE");
       expect(codesFor(set, "env-in-url")).not.toContain("BAD_URL");
 
       expect(codesFor(set, "typo")).toContain("UNRESOLVED_VARIABLE");

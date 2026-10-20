@@ -173,7 +173,7 @@ repos:
 | VS Code | `.vscode/mcp.json` | `servers` |
 | Copilot | `.github/mcp.json` | `mcpServers`, or a bare object whose keys are server names. `command` and `args` are stdio. `url` is HTTP. `type: "local"` still uses `command` and `args`. `tools` is an allowlist |
 | Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | `mcpServers` |
-| Gemini CLI | `.gemini/settings.json` | `mcpServers`. A file with no `mcpServers` key is skipped |
+| Gemini CLI | `.gemini/settings.json` | `mcpServers`. `httpUrl` is streamable HTTP and wins over `url` and `command`. `$NAME` in an env value is an environment reference. A file with no `mcpServers` key is skipped |
 | Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |
 | Junie | `.junie/mcp/mcp.json` | `mcpServers` |
 | Windsurf | `.windsurf/mcp_config.json` | `mcpServers`. Remote URLs may be `serverUrl` or `url` |
@@ -188,7 +188,7 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - VS Code user `mcp.json` (`servers`): `~/Library/Application Support/Code/User/mcp.json` on macOS, `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config/Code/User/mcp.json`) on Linux, or `%APPDATA%/Code/User/mcp.json` on Windows. Insiders and VSCodium are not scanned
 - Copilot `mcp-config.json` (`mcpServers`): `$COPILOT_HOME/mcp-config.json`, or `~/.copilot/mcp-config.json` when `COPILOT_HOME` is unset
 - Claude Code `~/.claude/settings.json`
-- Gemini CLI `~/.gemini/settings.json`. When `GEMINI_CLI_HOME` is set, the file is `$GEMINI_CLI_HOME/.gemini/settings.json`. Shape `mcpServers`. A file with no `mcpServers` key is skipped. System settings are not scanned
+- Gemini CLI `~/.gemini/settings.json`. When `GEMINI_CLI_HOME` is set, the file is `$GEMINI_CLI_HOME/.gemini/settings.json`. Shape `mcpServers`, including `httpUrl`. A file with no `mcpServers` key is skipped. System settings are not scanned
 - Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. A key matches when it is the same directory as the scan root, including a symlink and macOS `/tmp` versus `/private/tmp`. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
 - Continue `~/.continue/config.yaml` (`mcpServers` list)
 - Junie `~/.junie/mcp/mcp.json`
@@ -208,6 +208,9 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - `--online`: npm latest vs the pinned version or semver range (`NPM_DRIFT` only when latest is outside the pin). The lookup uses the same package those launchers run. A registry miss is `NPM_LOOKUP_FAILED`
 - `--probe`: MCP handshake from the project root (stdio spawn, or HTTP POST). Stdio matches the JSON-RPC id and skips logs and notifications. HTTP sends the config headers, plus Codex `bearer_token_env_var` and `env_http_headers` when those variables are set. A 401 with an OAuth `WWW-Authenticate` challenge is a warning (`PROBE_OAUTH`); the editor signs in and this probe does not. Env values are never printed
 - After a successful handshake, `--probe` also calls `tools/list`. One or more tools is `TOOLS_OK`. An empty list is a warning, `EMPTY_TOOLS`, not a failure and not `HEALTHY`. A tools/list error or timeout is a warning, `TOOLS_LIST_FAILED`. `--no-tools` skips that call
+- Doc placeholders warn in env (`PLACEHOLDER_ENV`), headers, and Cursor `auth` (`PLACEHOLDER_HEADER`): `your-key-here`, `your-token-here`, `your-api-token`, `your-oauth-client-id`, `your-client-secret`, `<token>`, `YOUR_`, `REPLACE_`, empty, and `changeme`. A real token is not a placeholder and is not printed
+- Gemini CLI `$NAME` in an env value is `UNRESOLVED_VARIABLE` when that variable is unset, because the CLI substitutes an empty string. `%NAME%` is the same check on Windows. Other clients do not expand `$NAME`
+- In `.mcp.json` and `~/.claude.json`, a `url` with no `type` is `MISSING_TRANSPORT_TYPE`. Claude Code skips that entry until the type is `http`, `sse`, `ws`, or `streamable-http`. `type: "sdk"` is skipped, not `NO_TRANSPORT`. Cursor `.cursor/mcp.json` remote servers still omit `type`
 
 The initialize request uses protocol revision `2025-11-25`. If the server rejects that method, the probe tries `server/discover` on `2026-07-28`, then `tools/list` on that same revision.
 
