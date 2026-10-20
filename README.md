@@ -16,14 +16,18 @@ Node.js 22.12 or newer.
 
 The npm package name is `@leon-pixel/mcp-health`. The unscoped name `mcp-health` was published by someone else and then unpublished, so npm will not let this project use it. The command name is still `mcp-health`.
 
+Check a repository without reading configs in your home directory. `npx` is enough; a global install is optional.
+
 ```bash
-npm i -g @leon-pixel/mcp-health
-mcp-health check .
+npx @leon-pixel/mcp-health check --no-user .
 ```
 
 ```bash
-npx @leon-pixel/mcp-health check .
+npm i -g @leon-pixel/mcp-health
+mcp-health check --no-user .
 ```
+
+Omit `--no-user` to also read user-level configs (Cursor, Claude, VS Code, and the rest of the list below). Those rows are labeled `user`. A warning there is in the home-directory file, not in the repository.
 
 From a checkout of this repository:
 
@@ -196,8 +200,8 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 
 ## Checks
 
-- Offline: JSON, YAML, and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders. `npx`, `npm exec`, `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, and `yarn dlx` warn `UNPINNED_PACKAGE` unless the package is `name@version` (`uvx --from name@version` counts as pinned). `-y`, `--yes`, `--quiet`, `dlx`, and `exec` are not the package name
-- Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, and a set `${env:NAME}` are expanded. `${input:…}` and an unset `${env:NAME}` are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. `--strict-variables` fails on the warnings too. Values are never printed
+- Offline: JSON, YAML, and TOML shape, PATH (including Windows `PATHEXT`), URLs, pins, placeholders. `npx`, `npm exec`, `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, and `yarn dlx` warn `UNPINNED_PACKAGE` unless the package is `name@version` (`uvx --from name@version` counts as pinned). `name@latest`, `name@next`, and `name@*` are not pins. `-y`, `--yes`, `--quiet`, `dlx`, and `exec` are not the package name. A stdio command is resolved from the scan root. When the server sets `env.PATH` and that value has no `${…}` left, lookup uses it instead of the process PATH
+- Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, `${CLAUDE_PROJECT_DIR}`, a set `${env:NAME}`, and Claude `${VAR}` / `${VAR:-default}` are expanded. `${input:…}`, an unset `${env:NAME}`, and an unset `${VAR}` with no default are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. A URL that still contains `${…}` is not also `BAD_URL`. `--strict-variables` fails on the warnings too. Values are never printed
 - `disabled: true` (Cursor) and `enabled: false` (Codex, Zed) are reported as disabled and are not checked
 - Zed `"source": "extension"` is an extension-provided server. It is not a missing command
 - `--online`: npm latest vs the pinned version or semver range (`NPM_DRIFT` only when latest is outside the pin). The lookup uses the same package those launchers run. A registry miss is `NPM_LOOKUP_FAILED`

@@ -7,6 +7,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Expand Claude Code `${VAR}` and `${VAR:-default}` in command, args, env, url, and headers, and expand `${CLAUDE_PROJECT_DIR}` to the scan root. An unset `${VAR}` with no default is a warning, the same as an unset `${env:NAME}`. A URL that still contains `${…}` is not also `BAD_URL`. Expanded values are not printed.
+- `name@latest`, `name@next`, and `name@*` are `UNPINNED_PACKAGE`. `--online` reports `NPM_LATEST` for those tags instead of calling them pinned. Exact versions and semver ranges stay pinned.
+- Stdio command lookup uses the server's `env.PATH` when that value has no unresolved `${…}`. The probe spawns the absolute path found there. On Windows, `Path` is the same key. A PATH that still contains `${…}` stays on the variable check.
+
+### Changed
+
+- The install examples run `check --no-user`. Omitting the flag also reads user-level configs, and those rows are labeled `user`.
+
 ## [1.4.0] - 2026-10-17
 
 ### Added

@@ -1,7 +1,8 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { lookupEnv } from "./vars.js";
+import { isFloatingPin, splitPackageSpec } from "./npm.js";
+import { isBareEnvToken, lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
 
@@ -110,15 +111,49 @@ export function resolveCommandOnPath(
   return undefined;
 }
 
-function commandOnPath(command: string, cwd?: string): boolean {
-  return (
-    resolveCommandOnPath(command, process.env, process.platform, cwd) !==
-    undefined
-  );
+/**
+ * PATH used to resolve a stdio command.
+ * A server `env.PATH` replaces the process PATH, which is what the editor spawns with.
+ * A value that still contains `${…}` is not a directory list, so lookup keeps the process PATH.
+ * On Windows, `Path` is the same variable.
+ */
+export function commandLookupEnv(
+  serverEnv: unknown,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (!serverEnv || typeof serverEnv !== "object" || Array.isArray(serverEnv)) {
+    return baseEnv;
+  }
+  let pathValue: unknown;
+  if (platform === "win32") {
+    for (const [key, value] of Object.entries(serverEnv)) {
+      if (key.toLowerCase() === "path") pathValue = value;
+    }
+  } else {
+    pathValue = (serverEnv as Record<string, unknown>).PATH;
+  }
+  if (typeof pathValue !== "string") return baseEnv;
+  if (unresolvedTokens(pathValue).length > 0) return baseEnv;
+  return { ...baseEnv, PATH: pathValue };
+}
+
+function commandOnPath(
+  command: string,
+  cwd: string | undefined,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return resolveCommandOnPath(command, env, process.platform, cwd) !== undefined;
 }
 
 function unresolvedTokens(value: string): string[] {
   return value.match(UNRESOLVED_VAR) ?? [];
+}
+
+function originalHttpUrl(server: ParsedServer): string {
+  if (typeof server.raw.url === "string") return server.raw.url;
+  if (typeof server.raw.serverUrl === "string") return server.raw.serverUrl;
+  return server.transport.kind === "http" ? server.transport.url : "";
 }
 
 /** Cursor `disabled: true`, or Codex/Zed `enabled: false`. */
@@ -175,9 +210,16 @@ export function serverHasUnresolved(server: ParsedServer): boolean {
   return collectUnresolved(server).length > 0;
 }
 
-/** `${input:…}` and unset `${env:…}` are IDE or secret references, not typos. */
+/**
+ * `${input:…}`, `${env:…}`, and Claude `${VAR}` / `${VAR:-default}` are
+ * references. `${foo.bar}` is not.
+ */
 function softUnresolved(token: string): boolean {
-  return /^\$\{input:/i.test(token) || /^\$\{env:/i.test(token);
+  return (
+    /^\$\{input:/i.test(token) ||
+    /^\$\{env:/i.test(token) ||
+    isBareEnvToken(token)
+  );
 }
 
 function unresolvedVariableFinding(
@@ -191,7 +233,7 @@ function unresolvedVariableFinding(
   const severity: Severity = hard || strict ? "fail" : "warn";
   const note = strict
     ? " --strict-variables is set"
-    : " ${input:…} and unset ${env:…} are warnings; other ${…} tokens fail";
+    : " ${input:…}, unset ${env:…}, and unset ${VAR} are warnings; other ${…} tokens fail";
   return {
     severity,
     code: "UNRESOLVED_VARIABLE",
@@ -201,14 +243,14 @@ function unresolvedVariableFinding(
   };
 }
 
-/** True when package ref includes an explicit version after the name. */
+/**
+ * True when the package spec names one version or range.
+ * `name@latest`, `name@next`, and `name@*` float, so they are not pins.
+ */
 export function isVersionPinned(pkg: string): boolean {
-  if (pkg.startsWith("@")) {
-    // @scope/name@version
-    return /^@[^/]+\/[^@]+@.+$/.test(pkg);
-  }
-  // name@version
-  return /^[^@]+@.+$/.test(pkg);
+  const { version } = splitPackageSpec(pkg);
+  if (!version) return false;
+  return !isFloatingPin(version);
 }
 
 /** `npx`, `npx.cmd`, and `C:\\path\\npx.exe` all share one launcher name. */
@@ -423,25 +465,32 @@ export function checkConfig(
     }
 
     if (server.transport.kind === "http") {
-      try {
-        const u = new URL(server.transport.url);
-        if (u.protocol !== "http:" && u.protocol !== "https:") {
+      // A leftover ${…} is the finding. The URL is not known yet.
+      if (unresolvedTokens(server.transport.url).length === 0) {
+        try {
+          const u = new URL(server.transport.url);
+          if (u.protocol !== "http:" && u.protocol !== "https:") {
+            local.push({
+              severity: "fail",
+              code: "BAD_URL_PROTOCOL",
+              message: `URL must be http(s), got ${u.protocol}`,
+              server: server.name,
+              file: file.path,
+            });
+          }
+        } catch {
+          const original = originalHttpUrl(server);
           local.push({
             severity: "fail",
-            code: "BAD_URL_PROTOCOL",
-            message: `URL must be http(s), got ${u.protocol}`,
+            code: "BAD_URL",
+            message:
+              original !== server.transport.url
+                ? "Invalid URL after expanding config variables"
+                : `Invalid URL: ${server.transport.url}`,
             server: server.name,
             file: file.path,
           });
         }
-      } catch {
-        local.push({
-          severity: "fail",
-          code: "BAD_URL",
-          message: `Invalid URL: ${server.transport.url}`,
-          server: server.name,
-          file: file.path,
-        });
       }
     }
 
@@ -449,7 +498,10 @@ export function checkConfig(
       const { command, args } = server.transport;
       const commandUnresolved = unresolvedTokens(command).length > 0;
 
-      if (!commandUnresolved && !commandOnPath(command, options.cwd)) {
+      if (
+        !commandUnresolved &&
+        !commandOnPath(command, options.cwd, commandLookupEnv(server.raw.env))
+      ) {
         local.push({
           severity: "fail",
           code: "COMMAND_NOT_FOUND",

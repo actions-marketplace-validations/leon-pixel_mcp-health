@@ -41,11 +41,21 @@ Patch release on top of the published 1.2.0 package. IDE input variables and dis
 | 2 | Continue (`.continue/mcpServers` and `config.yaml`), Junie (`.junie/mcp/mcp.json`), and Cline (`~/.cline/data/settings/cline_mcp_settings.json`) | Shipped |
 | 3 | Empty server map still exits 1, `--probe-timeout` rejects non-positive values, and the Windows Claude Desktop MSIX config is scanned | Shipped |
 
+## Shipped in 1.4.0
+
+| # | Capability | Status |
+|---|------------|--------|
+| 1 | Gemini CLI project and user `settings.json` | Shipped |
+| 2 | VS Code user `mcp.json` and Copilot user `mcp-config.json` | Shipped |
+| 3 | Unpinned `uvx`, `bunx`, `pnpm dlx`, `pnpm exec`, and `yarn dlx` | Shipped |
+| 4 | Claude project paths match the real directory, relative commands resolve from the scan root, and annotation paths use the workspace | Shipped |
+| 5 | A zero-config run names a project file to add and `--allow-missing` | Shipped |
+
 ## Next
 
-`1.3.0` is published. npm `latest` and the `v1` Action tag track that release.
+`1.4.0` is published. npm `latest` and the `v1` Action tag track that release.
 
-Post-1.3.0 work is the gap between a published CLI and a config people trust on the first try: say what a zero-config run found, point command and path failures at the directory the editor uses, and name a fix in the report without writing files.
+Still open: Copilot's committed `.github/mcp.json`, and naming a fix in the report without writing config files.
 
 ## Out of scope
 
