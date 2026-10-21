@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import {
   commandLookupEnv,
   commandNeedsShell,
+  isSocketMcpUrl,
   resolveCommandOnPath,
 } from "./check.js";
 import type { Finding, ParsedServer, Severity } from "./types.js";
@@ -803,6 +804,17 @@ export async function probeHttpServer(
 ): Promise<ProbeResult> {
   if (server.transport.kind !== "http") {
     return { status: "ok", findings: [] };
+  }
+
+  if (isSocketMcpUrl(server.transport.url)) {
+    const protocol = new URL(server.transport.url).protocol;
+    return finding(
+      "warn",
+      "PROBE_SKIPPED",
+      `Probe only handshakes http(s) URLs, not ${protocol}`,
+      server.name,
+      options.file,
+    );
   }
 
   const deadline = Date.now() + options.timeoutMs;
