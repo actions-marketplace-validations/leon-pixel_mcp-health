@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { execPath } from "node:process";
 import {
   chmodSync,
   existsSync,
@@ -15,6 +16,7 @@ import {
   isVersionPinned,
   extractNpxPackage,
   resolveCommandOnPath,
+  commandLookupEnv,
   commandNeedsShell,
 } from "./check.js";
 import { parseConfigFile } from "./parse.js";
@@ -32,8 +34,13 @@ describe("isVersionPinned", () => {
   it("detects pinned and unpinned packages", () => {
     expect(isVersionPinned("pkg@1.2.3")).toBe(true);
     expect(isVersionPinned("@scope/pkg@1.0.0")).toBe(true);
+    expect(isVersionPinned("pkg@^2025.1.0")).toBe(true);
     expect(isVersionPinned("pkg")).toBe(false);
     expect(isVersionPinned("@scope/pkg")).toBe(false);
+    expect(isVersionPinned("@playwright/mcp@latest")).toBe(false);
+    expect(isVersionPinned("some-server@Latest")).toBe(false);
+    expect(isVersionPinned("some-server@next")).toBe(false);
+    expect(isVersionPinned("some-server@*")).toBe(false);
   });
 });
 
@@ -232,6 +239,8 @@ describe("isVersionDrift", () => {
     expect(isVersionDrift("1.0.0", "1.0.0")).toBe(false);
     expect(isVersionDrift("1.0.0", "1.0.1")).toBe(true);
     expect(isVersionDrift("latest", "1.0.0")).toBe(true);
+    expect(isVersionDrift("Latest", "1.0.0")).toBe(true);
+    expect(isRangePin("Latest")).toBe(false);
   });
 
   it("accepts a semver range that includes npm latest", () => {
@@ -627,6 +636,26 @@ describe("expandString", () => {
     expect(expandString("${env:MISSING}", { root, env: {} })).toBe(
       "${env:MISSING}",
     );
+    expect(
+      expandString("${API_KEY}", { root, env: { API_KEY: "secret" } }),
+    ).toBe("secret");
+    expect(expandString("${API_KEY}", { root, env: {} })).toBe("${API_KEY}");
+    expect(
+      expandString("${API_BASE_URL:-https://api.example.com}/mcp", {
+        root,
+        env: {},
+      }),
+    ).toBe("https://api.example.com/mcp");
+    expect(
+      expandString("${API_BASE_URL:-https://api.example.com}/mcp", {
+        root,
+        env: { API_BASE_URL: "https://example.test" },
+      }),
+    ).toBe("https://example.test/mcp");
+    expect(expandString("${CLAUDE_PROJECT_DIR}/bin/server", { root })).toBe(
+      "/work/app/bin/server",
+    );
+    expect(expandString("${foo.bar}", { root, env: {} })).toBe("${foo.bar}");
   });
 });
 
@@ -887,7 +916,7 @@ describe("audit fixes", () => {
       writeFileSync(
         file,
         JSON.stringify({
-          mcpServers: { typo: { command: "${notARealVariable}" } },
+          mcpServers: { typo: { command: "${foo.bar}" } },
         }),
       );
       const typo = await runCheck({ root: dir, files: [file], includeUserConfig: false });
@@ -1057,5 +1086,277 @@ describe("omitStaleHealthy", () => {
       },
     ]);
     expect(findings.map((f) => f.code)).toEqual(["NPM_DRIFT"]);
+  });
+});
+
+describe("Claude ${VAR} references", () => {
+  const secret = "super-secret-mcp-health-value";
+
+  function codesFor(
+    report: Awaited<ReturnType<typeof runCheck>>,
+    name: string,
+  ): string[] {
+    return (
+      report.servers
+        .find((server) => server.name === name)
+        ?.findings.map((finding) => finding.code) ?? []
+    );
+  }
+
+  it("expands set variables and defaults, and does not print the value", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-claude-var-"));
+    const previous = {
+      API_KEY: process.env.API_KEY,
+      API_BASE_URL: process.env.API_BASE_URL,
+      MCP_HEALTH_MISSING_HOST: process.env.MCP_HEALTH_MISSING_HOST,
+    };
+    delete process.env.API_KEY;
+    delete process.env.API_BASE_URL;
+    delete process.env.MCP_HEALTH_MISSING_HOST;
+    try {
+      mkdirSync(join(dir, "bin"));
+      const tool = join(dir, "bin", "server");
+      writeFileSync(tool, "#!/bin/sh\nexit 0\n");
+      chmodSync(tool, 0o755);
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            "api-server": {
+              type: "http",
+              url: "${API_BASE_URL:-https://api.example.com}/mcp",
+              headers: { Authorization: "Bearer ${API_KEY}" },
+            },
+            "project-bin": {
+              command: "${CLAUDE_PROJECT_DIR}/bin/server",
+            },
+            "input-url": { url: "${input:serverUrl}" },
+            "env-in-url": { url: "http://${env:MCP_HEALTH_MISSING_HOST}/mcp" },
+            typo: { command: "${foo.bar}" },
+          },
+        }),
+      );
+
+      const unset = await runCheck({ root: dir, includeUserConfig: false });
+      expect(codesFor(unset, "api-server")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(unset, "api-server")).not.toContain("BAD_URL");
+      expect(codesFor(unset, "api-server")).not.toContain("BAD_URL_PROTOCOL");
+      expect(
+        unset.servers.find((server) => server.name === "api-server")?.status,
+      ).toBe("warn");
+
+      const strict = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        strictVariables: true,
+      });
+      expect(
+        strict.servers.find((server) => server.name === "api-server")?.status,
+      ).toBe("fail");
+
+      process.env.API_KEY = secret;
+      process.env.API_BASE_URL = "https://example.test";
+      const set = await runCheck({ root: dir, includeUserConfig: false });
+      expect(codesFor(set, "api-server")).not.toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(set, "api-server")).not.toContain("BAD_URL");
+      expect(codesFor(set, "api-server")).toContain("HEALTHY");
+      const rendered = `${formatHuman(set)}\n${JSON.stringify(set)}`;
+      expect(rendered).not.toContain(secret);
+      expect(rendered).not.toContain("https://example.test");
+
+      expect(codesFor(set, "project-bin")).not.toContain("COMMAND_NOT_FOUND");
+      expect(codesFor(set, "project-bin")).toContain("HEALTHY");
+
+      expect(codesFor(set, "input-url")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(set, "input-url")).toContain("MISSING_TRANSPORT_TYPE");
+      expect(codesFor(set, "input-url")).not.toContain("BAD_URL");
+      const inputUrl = set.servers.find((server) => server.name === "input-url");
+      expect(
+        inputUrl?.findings.find((finding) => finding.code === "UNRESOLVED_VARIABLE")
+          ?.severity,
+      ).toBe("warn");
+      expect(inputUrl?.status).toBe("fail");
+
+      expect(codesFor(set, "env-in-url")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(set, "env-in-url")).toContain("MISSING_TRANSPORT_TYPE");
+      expect(codesFor(set, "env-in-url")).not.toContain("BAD_URL");
+
+      expect(codesFor(set, "typo")).toContain("UNRESOLVED_VARIABLE");
+      expect(set.servers.find((server) => server.name === "typo")?.status).toBe(
+        "fail",
+      );
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("floating package tags", () => {
+  it("warns on @latest offline and reports NPM_LATEST online", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-floating-"));
+    writeFileSync(
+      join(dir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          playwright: { command: "npx", args: ["-y", "@playwright/mcp@latest"] },
+          star: { command: "npx", args: ["-y", "some-server@*"] },
+          pinned: { command: "npx", args: ["-y", "some-server@1.2.3"] },
+        },
+      }),
+    );
+    const fetchSpy = vi.fn(async () => {
+      return new Response(JSON.stringify({ version: "9.9.9" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      const offline = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        env: {},
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const playwright = offline.servers.find((server) => server.name === "playwright");
+      expect(playwright?.findings.map((finding) => finding.code)).toContain(
+        "UNPINNED_PACKAGE",
+      );
+      expect(
+        playwright?.findings.find((finding) => finding.code === "UNPINNED_PACKAGE")
+          ?.message,
+      ).toContain("@playwright/mcp@latest");
+      expect(
+        offline.servers
+          .find((server) => server.name === "star")
+          ?.findings.map((finding) => finding.code),
+      ).toContain("UNPINNED_PACKAGE");
+      expect(
+        offline.servers
+          .find((server) => server.name === "pinned")
+          ?.findings.map((finding) => finding.code),
+      ).not.toContain("UNPINNED_PACKAGE");
+
+      const online = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        env: {},
+        online: true,
+      });
+      const latest = online.servers
+        .find((server) => server.name === "playwright")
+        ?.findings.find((finding) => finding.code === "NPM_LATEST");
+      expect(latest?.message).toContain("Unpinned");
+      expect(latest?.message).toContain("@playwright/mcp@9.9.9");
+      expect(latest?.message).not.toContain("Pinned");
+      expect(
+        online.servers
+          .find((server) => server.name === "pinned")
+          ?.findings.some((finding) => finding.message.startsWith("Pinned latest")),
+      ).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("server env PATH", () => {
+  it("uses Path on Windows and ignores an unresolved PATH", () => {
+    const base = { PATH: "/usr/bin" };
+    expect(commandLookupEnv({ PATH: "/opt/bin" }, base, "linux").PATH).toBe(
+      "/opt/bin",
+    );
+    expect(commandLookupEnv({ Path: "C:\\bin" }, base, "win32").PATH).toBe(
+      "C:\\bin",
+    );
+    expect(
+      commandLookupEnv({ PATH: "${env:MISSING}/bin" }, base, "linux").PATH,
+    ).toBe("/usr/bin");
+    expect(commandLookupEnv({ API_KEY: "x" }, base, "linux")).toBe(base);
+  });
+
+  it("finds a command only on the server PATH and misses one the server PATH hides", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-server-path-"));
+    const bin = mkdtempSync(join(tmpdir(), "mcp-health-server-bin-"));
+    const hidden = mkdtempSync(join(tmpdir(), "mcp-health-server-hide-"));
+    try {
+      const server = join(bin, "server.mjs");
+      writeFileSync(
+        server,
+        `import { replyToInitialize } from ${JSON.stringify(join(fixtures, "support", "stdio-reply.mjs"))};\nreplyToInitialize();\n`,
+      );
+      const script = join(bin, "only-on-server-path");
+      writeFileSync(
+        script,
+        `#!/bin/sh\nexec ${JSON.stringify(execPath)} ${JSON.stringify(server)}\n`,
+      );
+      chmodSync(script, 0o755);
+      writeFileSync(
+        join(dir, "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            local: {
+              command: "only-on-server-path",
+              env: { PATH: bin },
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(dir, "other.json"),
+        JSON.stringify({
+          mcpServers: {
+            hidden: {
+              command: "node",
+              env: { PATH: hidden },
+            },
+            unresolved: {
+              command: "node",
+              env: { PATH: "${env:MCP_HEALTH_PATH_DOES_NOT_EXIST}/bin" },
+            },
+          },
+        }),
+      );
+
+      const probed = await runCheck({
+        root: dir,
+        files: [join(dir, "mcp.json")],
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 4000,
+      });
+      const local = probed.servers.find((server) => server.name === "local");
+      expect(local?.findings.map((finding) => finding.code)).toEqual(
+        expect.arrayContaining(["PROBE_OK", "TOOLS_OK"]),
+      );
+      expect(local?.findings.map((finding) => finding.code)).not.toContain(
+        "COMMAND_NOT_FOUND",
+      );
+
+      const report = await runCheck({
+        root: dir,
+        files: [join(dir, "other.json")],
+        includeUserConfig: false,
+      });
+      const byName = new Map(report.servers.map((server) => [server.name, server]));
+      expect(byName.get("hidden")?.findings.map((finding) => finding.code)).toContain(
+        "COMMAND_NOT_FOUND",
+      );
+      expect(
+        byName.get("unresolved")?.findings.map((finding) => finding.code),
+      ).toContain("UNRESOLVED_VARIABLE");
+      expect(
+        byName.get("unresolved")?.findings.map((finding) => finding.code),
+      ).not.toContain("COMMAND_NOT_FOUND");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(bin, { recursive: true, force: true });
+      rmSync(hidden, { recursive: true, force: true });
+    }
   });
 });

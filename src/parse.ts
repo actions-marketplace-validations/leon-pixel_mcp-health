@@ -17,6 +17,8 @@ const ServerEntrySchema = z
     command: z.union([z.string(), CommandObjectSchema]).optional(),
     args: z.array(z.string()).optional(),
     url: z.string().optional(),
+    /** Gemini CLI streamable HTTP endpoint. Wins over `url` and `command`. */
+    httpUrl: z.string().optional(),
     serverUrl: z.string().optional(),
     type: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
@@ -55,7 +57,9 @@ export type ParseOptions = {
 };
 
 function httpUrl(entry: ServerEntry): string | undefined {
-  const url = entry.url?.trim() || entry.serverUrl?.trim();
+  // Gemini CLI: httpUrl, then url, then command. serverUrl is Windsurf's name for url.
+  const url =
+    entry.httpUrl?.trim() || entry.url?.trim() || entry.serverUrl?.trim();
   return url || undefined;
 }
 
@@ -332,6 +336,14 @@ function isClaudeUserConfig(path: string): boolean {
   return normalized === ".claude.json" || normalized.endsWith("/.claude.json");
 }
 
+/** Copilot's committed project file. Not the user `mcp-config.json`. */
+function isCopilotProjectConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".github/mcp.json" || normalized.endsWith("/.github/mcp.json")
+  );
+}
+
 function isContinueConfig(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
   if (
@@ -468,6 +480,27 @@ function parseClaudeUserFile(
   return { path, format: "mcpServers", servers: [...merged.values()] };
 }
 
+/**
+ * `.github/mcp.json` is either a `mcpServers` object or a bare map of server
+ * entries. `type: "local"` still carries `command` and `args`. `tools` is an
+ * allowlist, not a transport. A missing file is never discovered.
+ */
+function parseCopilotProjectFile(path: string, text: string): ConfigFile {
+  const json = readJson(path, text);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = json as Record<string, unknown>;
+  if ("mcpServers" in obj) {
+    return parseMcpServersValue(path, obj.mcpServers);
+  }
+  const parsed = z.record(z.string(), ServerEntrySchema).safeParse(obj);
+  if (!parsed.success) {
+    return invalidConfig(path, formatZodError(parsed.error));
+  }
+  return { path, format: "mcpServers", servers: mapServers(parsed.data) };
+}
+
 function parseJsonDocument(path: string, text: string): ConfigFile {
   const json = readJson(path, text);
 
@@ -525,6 +558,7 @@ export function parseConfigFile(path: string, options: ParseOptions = {}): Confi
   }
   if (isContinueConfig(path)) return parseContinueFile(path, text);
   if (isClaudeUserConfig(path)) return parseClaudeUserFile(path, text, options);
+  if (isCopilotProjectConfig(path)) return parseCopilotProjectFile(path, text);
   return parseJsonDocument(path, text);
 }
 

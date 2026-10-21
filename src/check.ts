@@ -1,7 +1,8 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { lookupEnv } from "./vars.js";
+import { isFloatingPin, splitPackageSpec } from "./npm.js";
+import { isBareEnvToken, lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
 
@@ -110,15 +111,49 @@ export function resolveCommandOnPath(
   return undefined;
 }
 
-function commandOnPath(command: string, cwd?: string): boolean {
-  return (
-    resolveCommandOnPath(command, process.env, process.platform, cwd) !==
-    undefined
-  );
+/**
+ * PATH used to resolve a stdio command.
+ * A server `env.PATH` replaces the process PATH, which is what the editor spawns with.
+ * A value that still contains `${…}` is not a directory list, so lookup keeps the process PATH.
+ * On Windows, `Path` is the same variable.
+ */
+export function commandLookupEnv(
+  serverEnv: unknown,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (!serverEnv || typeof serverEnv !== "object" || Array.isArray(serverEnv)) {
+    return baseEnv;
+  }
+  let pathValue: unknown;
+  if (platform === "win32") {
+    for (const [key, value] of Object.entries(serverEnv)) {
+      if (key.toLowerCase() === "path") pathValue = value;
+    }
+  } else {
+    pathValue = (serverEnv as Record<string, unknown>).PATH;
+  }
+  if (typeof pathValue !== "string") return baseEnv;
+  if (unresolvedTokens(pathValue).length > 0) return baseEnv;
+  return { ...baseEnv, PATH: pathValue };
+}
+
+function commandOnPath(
+  command: string,
+  cwd: string | undefined,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return resolveCommandOnPath(command, env, process.platform, cwd) !== undefined;
 }
 
 function unresolvedTokens(value: string): string[] {
   return value.match(UNRESOLVED_VAR) ?? [];
+}
+
+function originalHttpUrl(server: ParsedServer): string {
+  if (typeof server.raw.url === "string") return server.raw.url;
+  if (typeof server.raw.serverUrl === "string") return server.raw.serverUrl;
+  return server.transport.kind === "http" ? server.transport.url : "";
 }
 
 /** Cursor `disabled: true`, or Codex/Zed `enabled: false`. */
@@ -175,9 +210,16 @@ export function serverHasUnresolved(server: ParsedServer): boolean {
   return collectUnresolved(server).length > 0;
 }
 
-/** `${input:…}` and unset `${env:…}` are IDE or secret references, not typos. */
+/**
+ * `${input:…}`, `${env:…}`, and Claude `${VAR}` / `${VAR:-default}` are
+ * references. `${foo.bar}` is not.
+ */
 function softUnresolved(token: string): boolean {
-  return /^\$\{input:/i.test(token) || /^\$\{env:/i.test(token);
+  return (
+    /^\$\{input:/i.test(token) ||
+    /^\$\{env:/i.test(token) ||
+    isBareEnvToken(token)
+  );
 }
 
 function unresolvedVariableFinding(
@@ -191,7 +233,7 @@ function unresolvedVariableFinding(
   const severity: Severity = hard || strict ? "fail" : "warn";
   const note = strict
     ? " --strict-variables is set"
-    : " ${input:…} and unset ${env:…} are warnings; other ${…} tokens fail";
+    : " ${input:…}, unset ${env:…}, and unset ${VAR} are warnings; other ${…} tokens fail";
   return {
     severity,
     code: "UNRESOLVED_VARIABLE",
@@ -201,14 +243,14 @@ function unresolvedVariableFinding(
   };
 }
 
-/** True when package ref includes an explicit version after the name. */
+/**
+ * True when the package spec names one version or range.
+ * `name@latest`, `name@next`, and `name@*` float, so they are not pins.
+ */
 export function isVersionPinned(pkg: string): boolean {
-  if (pkg.startsWith("@")) {
-    // @scope/name@version
-    return /^@[^/]+\/[^@]+@.+$/.test(pkg);
-  }
-  // name@version
-  return /^[^@]+@.+$/.test(pkg);
+  const { version } = splitPackageSpec(pkg);
+  if (!version) return false;
+  return !isFloatingPin(version);
 }
 
 /** `npx`, `npx.cmd`, and `C:\\path\\npx.exe` all share one launcher name. */
@@ -314,7 +356,11 @@ function worst(a: Severity, b: Severity): Severity {
 
 export function checkConfig(
   file: ConfigFile,
-  options: { strictVariables?: boolean; cwd?: string } = {},
+  options: {
+    strictVariables?: boolean;
+    cwd?: string;
+    platform?: NodeJS.Platform;
+  } = {},
 ): {
   findings: Finding[];
   perServer: Map<string, { status: Severity; findings: Finding[] }>;
@@ -395,6 +441,22 @@ export function checkConfig(
       continue;
     }
 
+    if (
+      isClaudeCodeEntryFile(file.path) &&
+      claudeEntryType(server.raw.type) === "sdk"
+    ) {
+      local.push({
+        severity: "ok",
+        code: "SDK_SERVER",
+        message: 'Claude Code skips type "sdk"; only an SDK host starts it',
+        server: server.name,
+        file: file.path,
+      });
+      findings.push(...local);
+      perServer.set(server.name, { status: "ok", findings: local });
+      continue;
+    }
+
     if (!server.name.trim()) {
       local.push({
         severity: "fail",
@@ -423,25 +485,32 @@ export function checkConfig(
     }
 
     if (server.transport.kind === "http") {
-      try {
-        const u = new URL(server.transport.url);
-        if (u.protocol !== "http:" && u.protocol !== "https:") {
+      // A leftover ${…} is the finding. The URL is not known yet.
+      if (unresolvedTokens(server.transport.url).length === 0) {
+        try {
+          const u = new URL(server.transport.url);
+          if (u.protocol !== "http:" && u.protocol !== "https:") {
+            local.push({
+              severity: "fail",
+              code: "BAD_URL_PROTOCOL",
+              message: `URL must be http(s), got ${u.protocol}`,
+              server: server.name,
+              file: file.path,
+            });
+          }
+        } catch {
+          const original = originalHttpUrl(server);
           local.push({
             severity: "fail",
-            code: "BAD_URL_PROTOCOL",
-            message: `URL must be http(s), got ${u.protocol}`,
+            code: "BAD_URL",
+            message:
+              original !== server.transport.url
+                ? "Invalid URL after expanding config variables"
+                : `Invalid URL: ${server.transport.url}`,
             server: server.name,
             file: file.path,
           });
         }
-      } catch {
-        local.push({
-          severity: "fail",
-          code: "BAD_URL",
-          message: `Invalid URL: ${server.transport.url}`,
-          server: server.name,
-          file: file.path,
-        });
       }
     }
 
@@ -449,7 +518,10 @@ export function checkConfig(
       const { command, args } = server.transport;
       const commandUnresolved = unresolvedTokens(command).length > 0;
 
-      if (!commandUnresolved && !commandOnPath(command, options.cwd)) {
+      if (
+        !commandUnresolved &&
+        !commandOnPath(command, options.cwd, commandLookupEnv(server.raw.env))
+      ) {
         local.push({
           severity: "fail",
           code: "COMMAND_NOT_FOUND",
@@ -495,17 +567,29 @@ export function checkConfig(
       }
     }
 
+    if (
+      isClaudeCodeEntryFile(file.path) &&
+      server.transport.kind === "http" &&
+      claudeEntryType(server.raw.type) === ""
+    ) {
+      local.push({
+        severity: "fail",
+        code: "MISSING_TRANSPORT_TYPE",
+        message:
+          'Claude Code skips a url entry with no type. Add "type": "http", "sse", or "ws".',
+        server: server.name,
+        file: file.path,
+      });
+    }
+
     const env = server.raw.env;
-    if (env && typeof env === "object") {
-      for (const [key, value] of Object.entries(
-        env as Record<string, string>,
-      )) {
-        if (
-          typeof value === "string" &&
-          (value.includes("YOUR_") ||
-            value === "" ||
-            value.toLowerCase() === "changeme")
-        ) {
+    if (env && typeof env === "object" && !Array.isArray(env)) {
+      const unsetRefs: string[] = [];
+      const gemini = isGeminiSettings(file.path);
+      const platform = options.platform ?? process.platform;
+      for (const [key, value] of Object.entries(env)) {
+        if (typeof value !== "string") continue;
+        if (isPlaceholder(value)) {
           local.push({
             severity: "warn",
             code: "PLACEHOLDER_ENV",
@@ -514,8 +598,28 @@ export function checkConfig(
             file: file.path,
           });
         }
+        if (!gemini) continue;
+        for (const ref of unsetGeminiEnvRefs(value, process.env, platform)) {
+          const label = `${ref} in env.${key}`;
+          if (!unsetRefs.includes(label)) unsetRefs.push(label);
+        }
+      }
+      if (unsetRefs.length > 0) {
+        const strict = Boolean(options.strictVariables);
+        local.push({
+          severity: strict ? "fail" : "warn",
+          code: "UNRESOLVED_VARIABLE",
+          message: `Unset Gemini env reference ${unsetRefs.join("; ")}. Gemini CLI substitutes an empty string.${
+            strict ? " --strict-variables is set" : ""
+          }`,
+          server: server.name,
+          file: file.path,
+        });
       }
     }
+
+    warnPlaceholderFields(server, file.path, local, "headers", "Header");
+    warnPlaceholderFields(server, file.path, local, "auth", "Auth");
 
     const bearer = server.raw.bearerTokenEnvVar;
     const authEnvNames: string[] = [];
@@ -557,4 +661,94 @@ export function checkConfig(
   }
 
   return { findings, perServer };
+}
+
+/** `.mcp.json` and `~/.claude.json`, the files Claude Code reads as MCP JSON. */
+function isClaudeCodeEntryFile(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".mcp.json" ||
+    normalized.endsWith("/.mcp.json") ||
+    normalized === ".claude.json" ||
+    normalized.endsWith("/.claude.json")
+  );
+}
+
+function isGeminiSettings(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".gemini/settings.json" ||
+    normalized.endsWith("/.gemini/settings.json")
+  );
+}
+
+function claudeEntryType(type: unknown): string {
+  return typeof type === "string" ? type.trim().toLowerCase() : "";
+}
+
+/**
+ * Doc placeholders copied from Cursor, Gemini CLI, Zed, and Claude Code.
+ * `your-company` is a real prefix and is not a match.
+ */
+export function isPlaceholder(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (trimmed.includes("YOUR_") || trimmed.includes("REPLACE_")) return true;
+  if (trimmed.toLowerCase() === "changeme") return true;
+  const withoutBearer = trimmed.replace(/^bearer\s+/i, "").trim();
+  if (withoutBearer !== trimmed) return isPlaceholder(withoutBearer);
+  if (/^<[^<>\s]+>$/.test(trimmed)) return true;
+  return /^your[-_](?:key|token|api[-_]token|secret|password|client[-_]secret|client[-_]id|oauth[-_]client[-_]id)(?:[-_]here)?$/i.test(
+    trimmed,
+  );
+}
+
+/**
+ * Gemini CLI `$NAME` references in an env value, plus Windows `%NAME%`.
+ * A set variable is omitted. The value is never returned.
+ * `${...}` is left to the braced-variable check.
+ */
+export function unsetGeminiEnvRefs(
+  value: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string[] {
+  const refs: string[] = [];
+  const add = (ref: string, name: string) => {
+    if (refs.includes(ref)) return;
+    const found = lookupEnv(name, env, platform);
+    if (found === undefined) refs.push(ref);
+  };
+  for (const match of value.matchAll(/(?<!\{)\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    const name = match[1];
+    if (name) add(`$${name}`, name);
+  }
+  if (platform === "win32") {
+    for (const match of value.matchAll(/%([A-Za-z_][A-Za-z0-9_]*)%/g)) {
+      const name = match[1];
+      if (name) add(`%${name}%`, name);
+    }
+  }
+  return refs;
+}
+
+function warnPlaceholderFields(
+  server: ParsedServer,
+  file: string,
+  local: Finding[],
+  field: "headers" | "auth",
+  label: "Header" | "Auth",
+): void {
+  const record = server.raw[field];
+  if (!record || typeof record !== "object" || Array.isArray(record)) return;
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== "string" || !isPlaceholder(value)) continue;
+    local.push({
+      severity: "warn",
+      code: "PLACEHOLDER_HEADER",
+      message: `${label} ${key} looks like a placeholder`,
+      server: server.name,
+      file,
+    });
+  }
 }

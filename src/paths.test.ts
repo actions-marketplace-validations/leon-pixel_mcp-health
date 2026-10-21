@@ -90,6 +90,8 @@ describe("readme release lines", () => {
     expect(readme).toContain(
       "npx --yes @leon-pixel/mcp-health check --no-user",
     );
+    expect(readme).toContain("npx @leon-pixel/mcp-health check --no-user .");
+    expect(readme).toContain("labeled `user`");
     expect(readme).toContain("pass_filenames: false");
     expect(readme).not.toContain("tracks the published 1.2.0 release");
     expect(readme).not.toContain(

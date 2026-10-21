@@ -3,6 +3,16 @@ import { basename, sep } from "node:path";
 import type { ParsedServer } from "./types.js";
 
 const VARIABLE = /\$\{([^{}]+)\}/g;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** `${VAR}` and `${VAR:-default}` name an environment variable. `${foo.bar}` does not. */
+export function isBareEnvToken(token: string): boolean {
+  const inner =
+    token.startsWith("${") && token.endsWith("}")
+      ? token.slice(2, -1).trim()
+      : token.trim();
+  return ENV_NAME.test(inner) || /^[A-Za-z_][A-Za-z0-9_]*:-/.test(inner);
+}
 
 export type ExpandContext = {
   /** Project root passed to the scan. This is `${workspaceFolder}`. */
@@ -27,8 +37,19 @@ export function lookupEnv(
   return undefined;
 }
 
+function projectDirOrEnv(
+  name: string,
+  ctx: ExpandContext,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | undefined {
+  if (name === "CLAUDE_PROJECT_DIR") return ctx.root;
+  return lookupEnv(name, env, platform);
+}
+
 /**
- * Expand the VS Code / Cursor variables a config scan can know about.
+ * Expand the VS Code / Cursor variables a config scan can know about,
+ * plus Claude `${VAR}`, `${VAR:-default}`, and `${CLAUDE_PROJECT_DIR}`.
  * Unknown tokens, including `${input:…}`, are left in place so the
  * checker can report them instead of treating the server as healthy.
  */
@@ -41,10 +62,22 @@ export function expandString(input: string, ctx: ExpandContext): string {
     if (key === "workspaceFolderBasename") return basename(ctx.root);
     if (key === "userHome") return homedir();
     if (key === "pathSeparator" || key === "/") return sep;
+    if (key === "CLAUDE_PROJECT_DIR") return ctx.root;
     if (key.startsWith("env:")) {
       const name = key.slice("env:".length).trim();
       if (!name) return full;
       const value = lookupEnv(name, env, platform);
+      if (value === undefined) return full;
+      return value;
+    }
+    const withDefault = key.match(/^([A-Za-z_][A-Za-z0-9_]*):-(.*)$/);
+    if (withDefault?.[1]) {
+      const value = projectDirOrEnv(withDefault[1], ctx, env, platform);
+      if (value === undefined) return withDefault[2] ?? "";
+      return value;
+    }
+    if (ENV_NAME.test(key)) {
+      const value = projectDirOrEnv(key, ctx, env, platform);
       if (value === undefined) return full;
       return value;
     }

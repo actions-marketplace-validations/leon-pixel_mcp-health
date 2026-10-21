@@ -17,13 +17,18 @@ export function splitPackageSpec(spec: string): {
 
 const FLOATING = new Set(["latest", "next", "*"]);
 
+/** `latest`, `next`, and `*` float. The comparison is case-insensitive. */
+export function isFloatingPin(version: string): boolean {
+  return FLOATING.has(version.toLowerCase());
+}
+
 function latestVersion(version: string): string | null {
   return valid(version) ?? valid(coerce(version));
 }
 
 /** True when the pin is a semver range rather than one exact version. */
 export function isRangePin(pinned: string): boolean {
-  if (FLOATING.has(pinned)) return false;
+  if (isFloatingPin(pinned)) return false;
   if (valid(pinned)) return false;
   return validRange(pinned) !== null;
 }
@@ -33,7 +38,7 @@ export function isRangePin(pinned: string): boolean {
  * Exact versions drift on inequality. Ranges drift only when latest is outside them.
  */
 export function isVersionDrift(pinned: string, latest: string): boolean {
-  if (FLOATING.has(pinned)) return true;
+  if (isFloatingPin(pinned)) return true;
   const latestClean = latestVersion(latest);
   if (!latestClean) return pinned !== latest;
   const range = validRange(pinned);
