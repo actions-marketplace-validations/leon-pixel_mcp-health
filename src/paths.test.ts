@@ -137,18 +137,23 @@ describe("--no-user help", () => {
 describe("1.5.0 changelog", () => {
   it("covers the unreleased fixes and the new clients", () => {
     const pkg = require("../package.json") as { version: string };
-    const notes = changelogSection(
-      readFileSync(join(repo, "CHANGELOG.md"), "utf8"),
-      pkg.version,
-    );
+    const changelog = readFileSync(join(repo, "CHANGELOG.md"), "utf8");
+    const notes = changelogSection(changelog, pkg.version);
+    const unreleased = changelog.slice(0, changelog.indexOf("## [1.5.0]"));
+    expect(unreleased).toContain("## [Unreleased]");
+    expect(unreleased).not.toMatch(/^\s*- /m);
     expect(pkg.version).toBe("1.5.0");
-    expect(notes.startsWith("## [1.5.0] - 2026-10-21")).toBe(true);
+    expect(notes.startsWith("## [1.5.0] - 2026-10-22")).toBe(true);
     expect(notes).toContain(".github/mcp.json");
     expect(notes).toContain("#68");
     expect(notes).toContain("type: \"local\"");
     expect(notes).toContain("${CLAUDE_PROJECT_DIR}");
     expect(notes).toContain("UNPINNED_PACKAGE");
     expect(notes).toContain("NPM_LATEST");
+    expect(notes).toContain("BAD_URL_PROTOCOL");
+    expect(notes).toContain("PROBE_SKIPPED");
+    expect(notes).toContain("ENV_FILE_MISSING");
+    expect(notes).toContain("#81");
     expect(notes).toContain("env.PATH");
     expect(notes).toContain("httpUrl");
     expect(notes).toContain("PLACEHOLDER_ENV");
