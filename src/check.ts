@@ -1,6 +1,7 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { isVsCodeConfigFile, type LocateOptions } from "./discover.js";
 import { isFloatingPin, splitPackageSpec } from "./npm.js";
 import { isBareEnvToken, lookupEnv } from "./vars.js";
 
@@ -128,31 +129,73 @@ export function resolveCommandOnPath(
   return undefined;
 }
 
+/** Where a config lives, so PATH lookup can follow that client's spawn rule. */
+export type CommandPathContext = LocateOptions & {
+  file?: string;
+};
+
+function serverPathValue(
+  serverEnv: Record<string, unknown>,
+  platform: NodeJS.Platform,
+): unknown {
+  if (platform === "win32") {
+    let found: unknown;
+    for (const [key, value] of Object.entries(serverEnv)) {
+      if (key.toLowerCase() === "path") found = value;
+    }
+    return found;
+  }
+  return serverEnv.PATH;
+}
+
+function inheritedPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | undefined {
+  if (platform === "win32") {
+    if (typeof env.PATH === "string") return env.PATH;
+    for (const [key, value] of Object.entries(env)) {
+      if (key.toLowerCase() === "path" && typeof value === "string") return value;
+    }
+    return undefined;
+  }
+  return env.PATH;
+}
+
 /**
- * PATH used to resolve a stdio command.
- * A server `env.PATH` replaces the process PATH, which is what the editor spawns with.
- * A value that still contains `${…}` is not a directory list, so lookup keeps the process PATH.
- * On Windows, `Path` is the same variable.
+ * PATH used to resolve a stdio command and to spawn `--probe`.
+ * Other clients replace the process PATH with the server's `env.PATH`.
+ * VS Code appends it: `extHostMcpNode` uses `existing + delimiter + value`
+ * for `.vscode/mcp.json` and the VS Code user `mcp.json`.
+ * A value that still contains `${…}` is not a directory list, so lookup
+ * keeps the process PATH. On Windows, `Path` is the same variable.
  */
 export function commandLookupEnv(
   serverEnv: unknown,
   baseEnv: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  context?: CommandPathContext,
 ): NodeJS.ProcessEnv {
   if (!serverEnv || typeof serverEnv !== "object" || Array.isArray(serverEnv)) {
     return baseEnv;
   }
-  let pathValue: unknown;
-  if (platform === "win32") {
-    for (const [key, value] of Object.entries(serverEnv)) {
-      if (key.toLowerCase() === "path") pathValue = value;
-    }
-  } else {
-    pathValue = (serverEnv as Record<string, unknown>).PATH;
-  }
+  const pathValue = serverPathValue(serverEnv as Record<string, unknown>, platform);
   if (typeof pathValue !== "string") return baseEnv;
   if (unresolvedTokens(pathValue).length > 0) return baseEnv;
-  return { ...baseEnv, PATH: pathValue };
+  const append = Boolean(
+    context?.file &&
+      isVsCodeConfigFile(context.file, {
+        platform: context.platform ?? platform,
+        home: context.home,
+        env: context.env,
+      }),
+  );
+  if (!append) return { ...baseEnv, PATH: pathValue };
+  const current = inheritedPath(baseEnv, platform);
+  const merged = current
+    ? `${current}${pathDelimiter(platform)}${pathValue}`
+    : pathValue;
+  return { ...baseEnv, PATH: merged };
 }
 
 function commandOnPath(
@@ -379,6 +422,8 @@ export function checkConfig(
     strictVariables?: boolean;
     cwd?: string;
     platform?: NodeJS.Platform;
+    home?: string;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): {
   findings: Finding[];
@@ -539,7 +584,16 @@ export function checkConfig(
 
       if (
         !commandUnresolved &&
-        !commandOnPath(command, options.cwd, commandLookupEnv(server.raw.env))
+        !commandOnPath(
+          command,
+          options.cwd,
+          commandLookupEnv(server.raw.env, process.env, process.platform, {
+            file: file.path,
+            platform: options.platform,
+            home: options.home,
+            env: options.env,
+          }),
+        )
       ) {
         local.push({
           severity: "fail",

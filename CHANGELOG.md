@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- VS Code (`.vscode/mcp.json` and the user `mcp.json`) appends a stdio server's `env.PATH` after the process PATH, and `--probe` spawns with that appended PATH. Other clients still replace PATH (#81).
+
 ## [1.5.0] - 2026-10-21
 
 ### Added

@@ -5,6 +5,8 @@ import {
   isSocketMcpUrl,
   resolveCommandOnPath,
 } from "./check.js";
+import type { CommandPathContext } from "./check.js";
+import { isVsCodeConfigFile } from "./discover.js";
 import type { Finding, ParsedServer, Severity } from "./types.js";
 import {
   LEGACY_PROTOCOL_VERSION,
@@ -107,13 +109,50 @@ function stringRecord(value: unknown): Record<string, string> {
   return out;
 }
 
+function isPathEnvKey(key: string, platform: NodeJS.Platform): boolean {
+  return platform === "win32" ? key.toLowerCase() === "path" : key === "PATH";
+}
+
+function assignPath(env: NodeJS.ProcessEnv, value: string | undefined): void {
+  if (value === undefined) return;
+  if (process.platform === "win32") {
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === "path") delete env[key];
+    }
+  }
+  env.PATH = value;
+}
+
+/**
+ * Child environment for a stdio probe.
+ * Non-VS Code configs replace PATH. VS Code appends `env.PATH` the way
+ * `extHostMcpNode` does, including when the key is `Path` on Windows.
+ */
 function redactEnv(
   env: Record<string, string> | undefined,
+  context?: CommandPathContext,
 ): NodeJS.ProcessEnv {
+  const append = Boolean(
+    context?.file &&
+      isVsCodeConfigFile(context.file, {
+        platform: context.platform,
+        home: context.home,
+        env: context.env,
+      }),
+  );
   const out: NodeJS.ProcessEnv = { ...process.env };
-  if (!env) return out;
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string") out[key] = value;
+  if (env) {
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value !== "string") continue;
+      if (append && isPathEnvKey(key, process.platform)) continue;
+      out[key] = value;
+    }
+  }
+  if (append) {
+    assignPath(
+      out,
+      commandLookupEnv(env, process.env, process.platform, context).PATH,
+    );
   }
   return out;
 }
@@ -342,7 +381,15 @@ function fromRpc(
 
 export async function probeStdioServer(
   server: ParsedServer,
-  options: { timeoutMs: number; file: string; cwd?: string; listTools?: boolean },
+  options: {
+    timeoutMs: number;
+    file: string;
+    cwd?: string;
+    listTools?: boolean;
+    home?: string;
+    env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+  },
 ): Promise<ProbeResult> {
   if (server.transport.kind !== "stdio") {
     return { status: "ok", findings: [] };
@@ -350,15 +397,21 @@ export async function probeStdioServer(
 
   const { command, args } = server.transport;
   const envRaw = server.raw.env as Record<string, string> | undefined;
+  const pathContext: CommandPathContext = {
+    file: options.file,
+    home: options.home,
+    env: options.env,
+    platform: options.platform,
+  };
   const resolved = resolveCommandOnPath(
     command,
-    commandLookupEnv(envRaw),
+    commandLookupEnv(envRaw, process.env, process.platform, pathContext),
     process.platform,
     options.cwd,
   );
   const executable = resolved ?? command;
   const child = spawn(executable, args, {
-    env: redactEnv(envRaw),
+    env: redactEnv(envRaw, pathContext),
     stdio: ["pipe", "pipe", "pipe"],
     cwd: options.cwd,
     shell: commandNeedsShell(executable),
@@ -883,7 +936,15 @@ export async function probeHttpServer(
 
 export async function probeServer(
   server: ParsedServer,
-  options: { timeoutMs: number; file: string; cwd?: string; listTools?: boolean },
+  options: {
+    timeoutMs: number;
+    file: string;
+    cwd?: string;
+    listTools?: boolean;
+    home?: string;
+    env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+  },
 ): Promise<ProbeResult> {
   if (server.transport.kind === "stdio") {
     return probeStdioServer(server, options);
