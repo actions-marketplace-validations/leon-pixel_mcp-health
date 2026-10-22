@@ -185,6 +185,44 @@ function continueBlockFiles(root: string): string[] {
   return files;
 }
 
+function pathSegments(file: string): string[] {
+  return file.replace(/\\/g, "/").split("/").filter((part) => part.length > 0);
+}
+
+function samePathSegment(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform,
+): boolean {
+  return platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+/**
+ * VS Code project `.vscode/mcp.json`, and the user `mcp.json` from
+ * "MCP: Open User Configuration". Insiders and VSCodium are different
+ * directories and are not included.
+ */
+export function isVsCodeConfigFile(
+  file: string,
+  options: LocateOptions = {},
+): boolean {
+  const parts = pathSegments(file);
+  const name = parts[parts.length - 1];
+  const parent = parts[parts.length - 2];
+  const osPlatform = options.platform ?? platform();
+  if (
+    name &&
+    parent &&
+    samePathSegment(name, "mcp.json", osPlatform) &&
+    samePathSegment(parent, ".vscode", osPlatform)
+  ) {
+    return true;
+  }
+  return configPathIdentity(file) === configPathIdentity(vscodeUserMcpPath(options));
+}
+
 /** Stable identity for labeling a config file as project or user. */
 function configPathIdentity(input: string): string {
   let normalized = resolve(input);
