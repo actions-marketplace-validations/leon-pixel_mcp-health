@@ -7,11 +7,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-### Fixed
-
-- VS Code (`.vscode/mcp.json` and the user `mcp.json`) appends a stdio server's `env.PATH` after the process PATH, and `--probe` spawns with that appended PATH. Other clients still replace PATH (#81).
-
-## [1.5.0] - 2026-10-21
+## [1.5.0] - 2026-10-22
 
 ### Added
 
@@ -19,6 +15,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- VS Code (`.vscode/mcp.json` and the user `mcp.json`) appends a stdio server's `env.PATH` after the process PATH, and `--probe` spawns with that appended PATH. Other clients still replace PATH (#81).
 - `ws:`, `wss:`, `unix:`, and `pipe:` MCP URLs are not `BAD_URL_PROTOCOL`. A fragment subpath such as `unix:///tmp/server.sock#/mcp/subpath` is part of that URL. `ftp:` and `file:` still fail. A URL that still contains `${…}` is unchanged.
 - `--probe` does not POST a `ws:`, `wss:`, `unix:`, or `pipe:` URL. Those are `PROBE_SKIPPED`. `http:` and `https:` probes are unchanged.
 - A VS Code `servers` env value may be a number or null. A number is checked as its decimal string. Null omits the variable. A boolean or object is still `SCHEMA_ERROR`. Other clients still reject a non-string env value.
