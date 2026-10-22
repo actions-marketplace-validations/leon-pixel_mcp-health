@@ -1,10 +1,27 @@
 import type { ConfigFile, Finding, ParsedServer, Severity } from "./types.js";
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { isFloatingPin, splitPackageSpec } from "./npm.js";
 import { isBareEnvToken, lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
+
+const HTTP_URL_PROTOCOLS = new Set(["http:", "https:"]);
+const SOCKET_URL_PROTOCOLS = new Set(["ws:", "wss:", "unix:", "pipe:"]);
+
+/** Remote HTTP, Claude Code WebSocket, and VS Code unix/pipe socket URLs. */
+export function isAllowedMcpUrlProtocol(protocol: string): boolean {
+  return HTTP_URL_PROTOCOLS.has(protocol) || SOCKET_URL_PROTOCOLS.has(protocol);
+}
+
+/** `ws:`, `wss:`, `unix:`, and `pipe:` are real MCP URLs the HTTP probe cannot speak. */
+export function isSocketMcpUrl(url: string): boolean {
+  try {
+    return SOCKET_URL_PROTOCOLS.has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
 
 function pathDelimiter(platform: NodeJS.Platform): string {
   return platform === "win32" ? ";" : ":";
@@ -203,6 +220,8 @@ function collectUnresolved(server: ParsedServer): string[] {
       if (typeof value === "string") add(`headers.${key}`, value);
     }
   }
+
+  if (typeof server.raw.envFile === "string") add("envFile", server.raw.envFile);
   return hits;
 }
 
@@ -489,11 +508,11 @@ export function checkConfig(
       if (unresolvedTokens(server.transport.url).length === 0) {
         try {
           const u = new URL(server.transport.url);
-          if (u.protocol !== "http:" && u.protocol !== "https:") {
+          if (!isAllowedMcpUrlProtocol(u.protocol)) {
             local.push({
               severity: "fail",
               code: "BAD_URL_PROTOCOL",
-              message: `URL must be http(s), got ${u.protocol}`,
+              message: `URL protocol ${u.protocol} is not supported (use http, https, ws, wss, unix, or pipe)`,
               server: server.name,
               file: file.path,
             });
@@ -642,6 +661,9 @@ export function checkConfig(
       }
     }
 
+    const envFile = missingEnvFileFinding(server, file, options.cwd);
+    if (envFile) local.push(envFile);
+
     for (const f of local) {
       status = worst(status, f.severity);
     }
@@ -661,6 +683,66 @@ export function checkConfig(
   }
 
   return { findings, perServer };
+}
+
+function isExistingFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Cursor stdio `envFile`, and the same field on a VS Code `servers` config.
+ * Portable `.mcp.json` and Copilot `.github/mcp.json` do not read it.
+ * The file is not opened.
+ */
+function readsEnvFile(file: string, format: ConfigFile["format"]): boolean {
+  if (format === "servers") return true;
+  const normalized = file.replace(/\\/g, "/");
+  if (
+    normalized === ".cursor/mcp.json" ||
+    normalized.endsWith("/.cursor/mcp.json")
+  ) {
+    return true;
+  }
+  if (normalized !== "mcp.json" && !normalized.endsWith("/mcp.json")) return false;
+  const ignored = new Set([
+    ".junie",
+    ".continue",
+    ".github",
+    ".vscode",
+    ".gemini",
+    ".windsurf",
+    ".zed",
+    ".codex",
+    ".claude",
+    ".cline",
+  ]);
+  return !normalized.split("/").some((part) => ignored.has(part));
+}
+
+function missingEnvFileFinding(
+  server: ParsedServer,
+  file: ConfigFile,
+  cwd: string | undefined,
+): Finding | undefined {
+  if (!readsEnvFile(file.path, file.format)) return undefined;
+  if (server.transport.kind !== "stdio") return undefined;
+  const value = server.raw.envFile;
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  if (unresolvedTokens(value).length > 0) return undefined;
+  const base = cwd && cwd.trim() ? resolve(cwd) : process.cwd();
+  const resolved = isAbsolute(value) ? value : resolve(base, value);
+  if (isExistingFile(resolved)) return undefined;
+  return {
+    severity: "warn",
+    code: "ENV_FILE_MISSING",
+    message: `envFile is not a file: ${value}`,
+    server: server.name,
+    file: file.path,
+  };
 }
 
 /** `.mcp.json` and `~/.claude.json`, the files Claude Code reads as MCP JSON. */

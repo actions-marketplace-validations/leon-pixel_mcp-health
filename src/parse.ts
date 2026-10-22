@@ -501,6 +501,30 @@ function parseCopilotProjectFile(path: string, text: string): ConfigFile {
   return { path, format: "mcpServers", servers: mapServers(parsed.data) };
 }
 
+/**
+ * VS Code allows stdio env values that are numbers or null.
+ * A number is the decimal string the host passes to the process.
+ * Null unsets the variable, so the key is dropped.
+ * Booleans and objects stay invalid. Other clients still require strings.
+ */
+function coerceVsCodeEnvValues(doc: Record<string, unknown>): void {
+  const servers = doc.servers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return;
+  for (const entry of Object.values(servers)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const env = (entry as Record<string, unknown>).env;
+    if (!env || typeof env !== "object" || Array.isArray(env)) continue;
+    const record = env as Record<string, unknown>;
+    for (const [key, value] of Object.entries(record)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        record[key] = String(value);
+      } else if (value === null) {
+        delete record[key];
+      }
+    }
+  }
+}
+
 function parseJsonDocument(path: string, text: string): ConfigFile {
   const json = readJson(path, text);
 
@@ -512,6 +536,7 @@ function parseJsonDocument(path: string, text: string): ConfigFile {
     }
 
     if ("servers" in obj) {
+      coerceVsCodeEnvValues(obj);
       const asServers = ServersDocSchema.safeParse(json);
       if (asServers.success) {
         return {

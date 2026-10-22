@@ -15,6 +15,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- `ws:`, `wss:`, `unix:`, and `pipe:` MCP URLs are not `BAD_URL_PROTOCOL`. A fragment subpath such as `unix:///tmp/server.sock#/mcp/subpath` is part of that URL. `ftp:` and `file:` still fail. A URL that still contains `${…}` is unchanged.
+- `--probe` does not POST a `ws:`, `wss:`, `unix:`, or `pipe:` URL. Those are `PROBE_SKIPPED`. `http:` and `https:` probes are unchanged.
+- A VS Code `servers` env value may be a number or null. A number is checked as its decimal string. Null omits the variable. A boolean or object is still `SCHEMA_ERROR`. Other clients still reject a non-string env value.
+- Cursor and VS Code stdio `envFile` warns `ENV_FILE_MISSING` when the expanded path is not a file. The file is not read. `.mcp.json` and `.github/mcp.json` do not warn.
 - Expand Claude Code `${VAR}` and `${VAR:-default}` in command, args, env, url, and headers, and expand `${CLAUDE_PROJECT_DIR}` to the scan root. An unset `${VAR}` with no default is a warning, the same as an unset `${env:NAME}`. A URL that still contains `${…}` is not also `BAD_URL`. Expanded values are not printed.
 - `name@latest`, `name@next`, and `name@*` are `UNPINNED_PACKAGE`. `--online` reports `NPM_LATEST` for those tags instead of calling them pinned. Exact versions and semver ranges stay pinned.
 - Stdio command lookup uses the server's `env.PATH` when that value has no unresolved `${…}`. The probe spawns the absolute path found there. On Windows, `Path` is the same key. A PATH that still contains `${…}` stays on the variable check.

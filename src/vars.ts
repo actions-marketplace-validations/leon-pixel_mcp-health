@@ -108,6 +108,9 @@ export function expandServerVariables(
   if (env) raw.env = env;
   const headers = expandStringRecord(raw.headers, ctx);
   if (headers) raw.headers = headers;
+  if (typeof raw.envFile === "string") {
+    raw.envFile = expandString(raw.envFile, ctx);
+  }
 
   if (server.transport.kind === "stdio") {
     return {
