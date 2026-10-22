@@ -170,6 +170,9 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
     const { perServer, findings } = checkConfig(parsed, {
       strictVariables: options.strictVariables,
       cwd: root,
+      platform: options.platform,
+      home: options.home,
+      env: options.env,
     });
 
     if (
@@ -310,6 +313,9 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
             file: path,
             cwd: root,
             listTools: options.probeListTools !== false,
+            platform: options.platform,
+            home: options.home,
+            env: options.env,
           });
           result.findings.push(...probed.findings);
           result.status = worst(result.status, probed.status);

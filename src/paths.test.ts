@@ -67,13 +67,17 @@ describe("readme release lines", () => {
   it("keeps the published release and the package version consistent", () => {
     const pkg = require("../package.json") as { version: string };
     const readme = readFileSync(join(repo, "README.md"), "utf8");
-    expect(pkg.version).toBe("1.4.0");
-    expect(readme).toContain("tracks the published 1.4.0 release");
+    expect(pkg.version).toBe("1.5.0");
+    expect(readme).toContain("tracks the published 1.5.0 release");
     expect(readme).toContain(
-      "`@leon-pixel/mcp-health@1.4.0` is the current npm `latest`.",
+      "`@leon-pixel/mcp-health@1.5.0` is the current npm `latest`.",
     );
     expect(readme).toContain(
-      "This repository is `1.4.0` in `package.json`, and the `v1.4.0` tag is published and `v1` points to it.",
+      "This repository is `1.5.0` in `package.json`, and the `v1.5.0` tag is published and `v1` points to it.",
+    );
+    expect(readme).not.toContain("tracks the published 1.4.0 release");
+    expect(readme).not.toContain(
+      "`@leon-pixel/mcp-health@1.4.0` is the current npm `latest`",
     );
     expect(readme).not.toContain("tracks the published 1.3.0 release");
     expect(readme).not.toContain(
@@ -130,27 +134,33 @@ describe("--no-user help", () => {
   });
 });
 
-describe("1.4.0 changelog", () => {
+describe("1.5.0 changelog", () => {
   it("covers the unreleased fixes and the new clients", () => {
     const pkg = require("../package.json") as { version: string };
-    const notes = changelogSection(
-      readFileSync(join(repo, "CHANGELOG.md"), "utf8"),
-      pkg.version,
-    );
-    expect(pkg.version).toBe("1.4.0");
-    expect(notes.startsWith("## [1.4.0] - 2026-10-17")).toBe(true);
-    expect(notes).toContain(".gemini/settings.json");
-    expect(notes).toContain("GEMINI_CLI_HOME");
-    expect(notes).toContain("Copilot");
-    expect(notes).toContain("COPILOT_HOME");
-    expect(notes).toContain("uvx");
+    const changelog = readFileSync(join(repo, "CHANGELOG.md"), "utf8");
+    const notes = changelogSection(changelog, pkg.version);
+    const unreleased = changelog.slice(0, changelog.indexOf("## [1.5.0]"));
+    expect(unreleased).toContain("## [Unreleased]");
+    expect(unreleased).not.toMatch(/^\s*- /m);
+    expect(pkg.version).toBe("1.5.0");
+    expect(notes.startsWith("## [1.5.0] - 2026-10-22")).toBe(true);
+    expect(notes).toContain(".github/mcp.json");
+    expect(notes).toContain("#68");
+    expect(notes).toContain("type: \"local\"");
+    expect(notes).toContain("${CLAUDE_PROJECT_DIR}");
     expect(notes).toContain("UNPINNED_PACKAGE");
-    expect(notes).toContain("~/.claude.json");
-    expect(notes).toContain("COMMAND_NOT_FOUND");
-    expect(notes).toContain("SARIF");
-    expect(notes).toContain("--allow-missing");
-    expect(notes).toContain("`project` or `user`");
-    expect(notes).not.toContain("## [1.3.0]");
+    expect(notes).toContain("NPM_LATEST");
+    expect(notes).toContain("BAD_URL_PROTOCOL");
+    expect(notes).toContain("PROBE_SKIPPED");
+    expect(notes).toContain("ENV_FILE_MISSING");
+    expect(notes).toContain("#81");
+    expect(notes).toContain("env.PATH");
+    expect(notes).toContain("httpUrl");
+    expect(notes).toContain("PLACEHOLDER_ENV");
+    expect(notes).toContain("UNRESOLVED_VARIABLE");
+    expect(notes).toContain("MISSING_TRANSPORT_TYPE");
+    expect(notes).toContain("labeled `user`");
+    expect(notes).not.toContain("## [1.4.0]");
   });
 });
 

@@ -1360,3 +1360,370 @@ describe("server env PATH", () => {
     }
   });
 });
+
+describe("websocket and socket URLs", () => {
+  function codesFor(
+    report: Awaited<ReturnType<typeof runCheck>>,
+    name: string,
+  ): string[] {
+    return (
+      report.servers
+        .find((server) => server.name === name)
+        ?.findings.map((finding) => finding.code) ?? []
+    );
+  }
+
+  it("accepts wss, ws, unix, and pipe, and rejects ftp and file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-socket-url-"));
+    const previous = process.env.MCP_HOST;
+    delete process.env.MCP_HOST;
+    try {
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            events: {
+              type: "ws",
+              url: "wss://mcp.example.com/socket",
+            },
+            plainWs: {
+              type: "ws",
+              url: "ws://mcp.example.com/socket",
+            },
+            variable: {
+              type: "ws",
+              url: "wss://${MCP_HOST}/socket",
+            },
+          },
+        }),
+      );
+      mkdirSync(join(dir, ".vscode"));
+      writeFileSync(
+        join(dir, ".vscode/mcp.json"),
+        JSON.stringify({
+          servers: {
+            local: {
+              type: "http",
+              url: "unix:///tmp/server.sock#/mcp/subpath",
+            },
+            pipe: {
+              type: "http",
+              url: "pipe:///pipe/named-pipe",
+            },
+            https: {
+              type: "http",
+              url: "https://example.com/mcp",
+            },
+            ftp: {
+              type: "http",
+              url: "ftp://example.com/mcp",
+            },
+            file: {
+              type: "http",
+              url: "file:///tmp/not-mcp",
+            },
+          },
+        }),
+      );
+
+      const report = await runCheck({ root: dir, includeUserConfig: false });
+      expect(codesFor(report, "events")).toEqual(["HEALTHY"]);
+      expect(codesFor(report, "plainWs")).toEqual(["HEALTHY"]);
+      expect(codesFor(report, "variable")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(report, "variable")).not.toContain("BAD_URL");
+      expect(codesFor(report, "variable")).not.toContain("BAD_URL_PROTOCOL");
+      expect(codesFor(report, "local")).toEqual(["HEALTHY"]);
+      expect(codesFor(report, "pipe")).toEqual(["HEALTHY"]);
+      expect(codesFor(report, "https")).toEqual(["HEALTHY"]);
+      expect(codesFor(report, "ftp")).toContain("BAD_URL_PROTOCOL");
+      expect(codesFor(report, "file")).toContain("BAD_URL_PROTOCOL");
+      const ftp = report.servers.find((server) => server.name === "ftp");
+      expect(ftp?.findings.map((finding) => finding.message).join("\n")).toMatch(
+        /ftp:/,
+      );
+      expect(exitCode(report)).toBe(2);
+    } finally {
+      if (previous === undefined) delete process.env.MCP_HOST;
+      else process.env.MCP_HOST = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips the probe for wss and unix URLs without opening a connection", async () => {
+    const fetchMock = vi.fn(() => {
+      throw new Error("network");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-socket-probe-"));
+    try {
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            events: {
+              type: "ws",
+              url: "wss://mcp.example.com/socket",
+            },
+          },
+        }),
+      );
+      mkdirSync(join(dir, ".vscode"));
+      writeFileSync(
+        join(dir, ".vscode/mcp.json"),
+        JSON.stringify({
+          servers: {
+            local: {
+              type: "http",
+              url: "unix:///tmp/server.sock#/mcp/subpath",
+            },
+          },
+        }),
+      );
+
+      const report = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        probe: true,
+        probeListTools: false,
+        probeTimeoutMs: 500,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      for (const name of ["events", "local"]) {
+        const codes = codesFor(report, name);
+        expect(codes).toContain("PROBE_SKIPPED");
+        expect(codes).not.toContain("PROBE_FAILED");
+        expect(codes).not.toContain("BAD_URL_PROTOCOL");
+      }
+      expect(
+        report.servers
+          .find((server) => server.name === "events")
+          ?.findings.find((finding) => finding.code === "PROBE_SKIPPED")?.message,
+      ).toMatch(/wss:/);
+      expect(
+        report.servers
+          .find((server) => server.name === "local")
+          ?.findings.find((finding) => finding.code === "PROBE_SKIPPED")?.message,
+      ).toMatch(/unix:/);
+      expect(report.servers.every((server) => server.status === "warn")).toBe(
+        true,
+      );
+      expect(exitCode(report)).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("VS Code env values", () => {
+  it("accepts a number and null without failing the rest of the file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-vscode-env-"));
+    try {
+      mkdirSync(join(dir, ".vscode"));
+      writeFileSync(
+        join(dir, ".vscode/mcp.json"),
+        JSON.stringify({
+          servers: {
+            numeric: {
+              type: "stdio",
+              command: "node",
+              args: ["server.js"],
+              env: { PORT: 3000, OPTIONAL: null },
+            },
+            plain: {
+              type: "stdio",
+              command: "node",
+              args: ["server.js"],
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(dir, "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            api: {
+              command: "node",
+              args: ["server.js"],
+              env: { PORT: 3000 },
+            },
+          },
+        }),
+      );
+
+      const report = await runCheck({ root: dir, includeUserConfig: false });
+      const vscode = report.servers.filter((server) =>
+        server.file.endsWith(".vscode/mcp.json"),
+      );
+      const vscodeCodes = vscode.flatMap((server) =>
+        server.findings.map((finding) => finding.code),
+      );
+      expect(vscodeCodes).not.toContain("SCHEMA_ERROR");
+      expect(vscodeCodes).not.toContain("PLACEHOLDER_ENV");
+      expect(vscode.map((server) => server.name).sort()).toEqual([
+        "numeric",
+        "plain",
+      ]);
+      expect(vscode.every((server) => server.status === "ok")).toBe(true);
+
+      const cursor = report.servers.find(
+        (server) => server.file === join(dir, "mcp.json"),
+      );
+      expect(cursor?.findings.map((finding) => finding.code)).toContain(
+        "SCHEMA_ERROR",
+      );
+      expect(cursor?.name).toBe("(config)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still rejects a boolean env value in a VS Code config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-vscode-env-bool-"));
+    try {
+      mkdirSync(join(dir, ".vscode"));
+      writeFileSync(
+        join(dir, ".vscode/mcp.json"),
+        JSON.stringify({
+          servers: {
+            numeric: {
+              type: "stdio",
+              command: "node",
+              args: ["server.js"],
+              env: { ENABLED: true },
+            },
+          },
+        }),
+      );
+      const report = await runCheck({ root: dir, includeUserConfig: false });
+      const finding = report.servers
+        .flatMap((server) => server.findings)
+        .find((item) => item.code === "SCHEMA_ERROR");
+      expect(finding?.message).toMatch(/ENABLED/);
+      expect(finding?.message).toMatch(/boolean/i);
+      expect(exitCode(report)).toBe(2);
+      expect(report.summary.servers).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("envFile", () => {
+  const secret = "envfile-secret-do-not-print";
+
+  function codesFor(
+    report: Awaited<ReturnType<typeof runCheck>>,
+    name: string,
+  ): string[] {
+    return (
+      report.servers
+        .find((server) => server.name === name)
+        ?.findings.map((finding) => finding.code) ?? []
+    );
+  }
+
+  it("warns when a Cursor or VS Code stdio envFile is missing and does not read one that exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-envfile-"));
+    try {
+      mkdirSync(join(dir, ".cursor"));
+      mkdirSync(join(dir, ".vscode"));
+      mkdirSync(join(dir, ".github"));
+      writeFileSync(
+        join(dir, ".cursor/mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            local: {
+              command: "node",
+              args: ["server.js"],
+              envFile: "${workspaceFolder}/.env",
+            },
+            remote: {
+              url: "https://example.com/mcp",
+              envFile: "${workspaceFolder}/.env",
+            },
+            deferred: {
+              command: "node",
+              args: ["server.js"],
+              envFile: "${input:env-file}",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(dir, "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            root: {
+              command: "node",
+              args: ["server.js"],
+              envFile: ".env",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(dir, ".vscode/mcp.json"),
+        JSON.stringify({
+          servers: {
+            editor: {
+              type: "stdio",
+              command: "node",
+              args: ["server.js"],
+              envFile: "${workspaceFolder}/missing.env",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            claude: {
+              command: "node",
+              args: ["server.js"],
+              envFile: "${workspaceFolder}/.env",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(dir, ".github/mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            copilot: {
+              command: "node",
+              args: ["server.js"],
+              envFile: "${workspaceFolder}/.env",
+            },
+          },
+        }),
+      );
+
+      const missing = await runCheck({ root: dir, includeUserConfig: false });
+      expect(codesFor(missing, "local")).toContain("ENV_FILE_MISSING");
+      expect(codesFor(missing, "local")).not.toContain("HEALTHY");
+      expect(missing.servers.find((server) => server.name === "local")?.status).toBe(
+        "warn",
+      );
+      expect(codesFor(missing, "root")).toContain("ENV_FILE_MISSING");
+      expect(codesFor(missing, "editor")).toContain("ENV_FILE_MISSING");
+      expect(codesFor(missing, "remote")).not.toContain("ENV_FILE_MISSING");
+      expect(codesFor(missing, "deferred")).toContain("UNRESOLVED_VARIABLE");
+      expect(codesFor(missing, "deferred")).not.toContain("ENV_FILE_MISSING");
+      expect(codesFor(missing, "claude")).toEqual(["HEALTHY"]);
+      expect(codesFor(missing, "copilot")).toEqual(["HEALTHY"]);
+      expect(exitCode(missing)).toBe(1);
+
+      writeFileSync(join(dir, ".env"), `TOKEN=${secret}\n`);
+      const present = await runCheck({ root: dir, includeUserConfig: false });
+      expect(codesFor(present, "local")).toEqual(["HEALTHY"]);
+      expect(codesFor(present, "root")).toEqual(["HEALTHY"]);
+      expect(codesFor(present, "editor")).toContain("ENV_FILE_MISSING");
+      const rendered = `${formatHuman(present)}\n${JSON.stringify(present)}`;
+      expect(rendered).not.toContain(secret);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
