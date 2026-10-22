@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-21
+
+### Added
+
+- Discover GitHub Copilot's committed `.github/mcp.json` (#68). Project scans, including `--no-user`, read it. A missing file is skipped, not `FILE_NOT_FOUND`. A `mcpServers` object uses the existing parser. A bare top-level object is a server map: `command` and `args` are stdio, `url` is HTTP, `type: "local"` still uses `command` and `args`, and `tools` is an allowlist, not a transport.
+
 ### Fixed
 
 - Expand Claude Code `${VAR}` and `${VAR:-default}` in command, args, env, url, and headers, and expand `${CLAUDE_PROJECT_DIR}` to the scan root. An unset `${VAR}` with no default is a warning, the same as an unset `${env:NAME}`. A URL that still contains `${…}` is not also `BAD_URL`. Expanded values are not printed.

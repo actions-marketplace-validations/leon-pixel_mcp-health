@@ -1,6 +1,6 @@
 {
   "name": "@leon-pixel/mcp-health",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "CLI that scans MCP server configs and reports health, versions, and broken entries",
   "main": "./dist/index.js",
   "scripts": {
