@@ -467,13 +467,18 @@ describe("runCheck", () => {
     expect(codes).toContain("BAD_URL");
   });
 
-  it("reads claude settings mcpServers", async () => {
+  it("fails claude settings mcpServers instead of grading them healthy", async () => {
     const report = await runCheck({
       root: join(fixtures, "claude-settings"),
       includeUserConfig: false,
     });
     expect(report.summary.fail).toBe(0);
-    expect(report.servers.some((s) => s.name === "memory")).toBe(true);
+    expect(report.summary.servers).toBe(0);
+    expect(report.servers.some((server) => server.name === "memory")).toBe(false);
+    expect(report.servers.flatMap((server) => server.findings.map((finding) => finding.code))).toEqual([
+      "MCP_SERVERS_IGNORED",
+    ]);
+    expect(exitCode(report)).toBe(2);
   });
 
   it("probes fixture stdio server successfully", async () => {

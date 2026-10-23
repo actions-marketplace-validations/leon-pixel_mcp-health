@@ -336,6 +336,21 @@ function isClaudeUserConfig(path: string): boolean {
   return normalized === ".claude.json" || normalized.endsWith("/.claude.json");
 }
 
+/**
+ * Marker on `ConfigFile.error` when a Claude settings file has `mcpServers`.
+ * Claude Code does not load that key. The checker turns it into a finding.
+ */
+export const CLAUDE_SETTINGS_MCP_SERVERS = "MCP_SERVERS_IGNORED";
+
+/**
+ * `.claude/settings.json` and `.claude/settings.local.json`, including
+ * `~/.claude/settings.json`. Not `.mcp.json` and not `~/.claude.json`.
+ */
+export function isClaudeSettingsFile(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return /(?:^|\/)\.claude\/settings(?:\.local)?\.json$/.test(normalized);
+}
+
 /** Copilot's committed project file. Not the user `mcp-config.json`. */
 function isCopilotProjectConfig(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
@@ -530,6 +545,16 @@ function parseJsonDocument(path: string, text: string): ConfigFile {
 
   if (json !== null && typeof json === "object" && !Array.isArray(json)) {
     const obj = json as Record<string, unknown>;
+
+    // Claude Code ignores this key. Do not grade the entries as live servers.
+    if (isClaudeSettingsFile(path) && "mcpServers" in obj) {
+      return {
+        path,
+        format: "invalid",
+        servers: [],
+        error: CLAUDE_SETTINGS_MCP_SERVERS,
+      };
+    }
 
     if ("mcpServers" in obj) {
       return parseMcpServersValue(path, obj.mcpServers);
