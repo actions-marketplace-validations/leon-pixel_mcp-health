@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,8 +13,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { discoverConfigPaths, __testing } from "./discover.js";
-import { parseConfigFile } from "./parse.js";
-import { formatHuman, formatJson } from "./report.js";
+import { isClaudeSettingsFile, parseConfigFile } from "./parse.js";
+import { exitCode, formatHuman, formatJson } from "./report.js";
 import { runCheck } from "./run.js";
 import type { HealthReport } from "./types.js";
 
@@ -339,7 +340,10 @@ describe("Claude Code ~/.claude.json", () => {
         home,
         env: {},
       });
-      expect(names(skipped).sort()).toEqual(["fromMcp", "fromSettings"]);
+      expect(names(skipped).sort()).toEqual(["(config)", "fromMcp"]);
+      expect(names(skipped)).not.toContain("fromSettings");
+      expect(codes(skipped)).toContain("MCP_SERVERS_IGNORED");
+      expect(exitCode(skipped)).toBe(2);
       expect(skipped.files.some((file) => file.endsWith(".claude.json"))).toBe(false);
       expectSecretsHidden(skipped, CLAUDE_SECRETS);
 
@@ -361,10 +365,11 @@ describe("Claude Code ~/.claude.json", () => {
           },
         },
       );
-      expect(cli.status).toBe(0);
+      expect(cli.status).toBe(2);
       const output = `${cli.stdout}\n${cli.stderr}`;
       expect(output).toContain("fromMcp");
-      expect(output).toContain("fromSettings");
+      expect(output).toContain("MCP_SERVERS_IGNORED");
+      expect(output).not.toContain("fromSettings");
       expect(output).not.toContain("user-memory");
       expect(output).not.toContain("local-fs");
       expect(output).not.toContain("other-db");
@@ -374,6 +379,185 @@ describe("Claude Code ~/.claude.json", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Claude Code settings files", () => {
+  it("recognizes project and user settings paths, not other JSON configs", () => {
+    expect(isClaudeSettingsFile("/work/app/.claude/settings.json")).toBe(true);
+    expect(isClaudeSettingsFile("/work/app/.claude/settings.local.json")).toBe(true);
+    expect(isClaudeSettingsFile("/home/me/.claude/settings.json")).toBe(true);
+    expect(isClaudeSettingsFile("C:\\Users\\me\\.claude\\settings.json")).toBe(true);
+    expect(isClaudeSettingsFile("C:\\Users\\me\\.claude\\settings.local.json")).toBe(true);
+    expect(isClaudeSettingsFile("/work/app/.mcp.json")).toBe(false);
+    expect(isClaudeSettingsFile("/home/me/.claude.json")).toBe(false);
+    expect(isClaudeSettingsFile("/work/app/.gemini/settings.json")).toBe(false);
+    expect(isClaudeSettingsFile("/work/app/.zed/settings.json")).toBe(false);
+  });
+
+  it("fails a project settings mcpServers block and does not probe it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-claude-settings-"));
+    const marker = join(root, "spawned.txt");
+    const secret = "settings-secret-do-not-print";
+    try {
+      const script = join(root, "spawn.mjs");
+      writeFileSync(
+        script,
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "spawned\\n");\n`,
+      );
+      const settings = join(root, ".claude", "settings.json");
+      mkdirSync(join(root, ".claude"));
+      writeFileSync(
+        settings,
+        JSON.stringify({
+          mcpServers: {
+            local: {
+              command: "node",
+              args: [script],
+              env: { API_KEY: secret },
+            },
+          },
+        }),
+      );
+      const report = await runCheck({
+        root,
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 3000,
+        env: {},
+      });
+      expect(report.servers.map((server) => server.name)).toEqual(["(config)"]);
+      expect(report.servers[0]?.scope).toBe("project");
+      expect(report.servers[0]?.findings.map((finding) => finding.code)).toEqual([
+        "MCP_SERVERS_IGNORED",
+      ]);
+      expect(report.servers[0]?.findings[0]?.message).toContain("settings.json");
+      expect(report.servers[0]?.findings[0]?.message).toContain(".mcp.json");
+      expect(report.servers[0]?.findings[0]?.message).toContain("~/.claude.json");
+      expect(report.servers[0]?.status).toBe("fail");
+      expect(exitCode(report)).toBe(2);
+      expect(report.summary.fail).toBe(0);
+      expect(report.summary.servers).toBe(0);
+      const header = formatHuman(report).split("\n")[1] ?? "";
+      expect(header).toContain(
+        "exit 2 because of a config-level failure (MCP_SERVERS_IGNORED)",
+      );
+      expect(existsSync(marker)).toBe(false);
+      expect(codes(report)).not.toContain("HEALTHY");
+      expect(codes(report)).not.toContain("PROBE_OK");
+      expect(codes(report)).not.toContain("SCHEMA_ERROR");
+      expectSecretsHidden(report, [secret]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("names settings.local.json and still skips a permissions-only file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-claude-local-"));
+    try {
+      mkdirSync(join(root, ".claude"));
+      const local = join(root, ".claude", "settings.local.json");
+      writeFileSync(
+        local,
+        JSON.stringify({
+          mcpServers: { misplaced: { command: "node", args: ["--version"] } },
+        }),
+      );
+      const ignored = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(ignored.servers[0]?.findings[0]?.code).toBe("MCP_SERVERS_IGNORED");
+      expect(ignored.servers[0]?.findings[0]?.message).toContain("settings.local.json");
+      expect(names(ignored)).not.toContain("misplaced");
+      expect(exitCode(ignored)).toBe(2);
+
+      writeFileSync(local, JSON.stringify({ permissions: { allow: [] } }));
+      const skipped = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(skipped)).toEqual(["SKIPPED_NO_MCP"]);
+      expect(exitCode(skipped)).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails an empty or non-object mcpServers key instead of a schema error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-claude-empty-"));
+    try {
+      mkdirSync(join(root, ".claude"));
+      const settings = join(root, ".claude", "settings.json");
+      writeFileSync(settings, JSON.stringify({ mcpServers: {} }));
+      const empty = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(empty)).toEqual(["MCP_SERVERS_IGNORED"]);
+      expect(codes(empty)).not.toContain("EMPTY_SERVERS");
+      expect(exitCode(empty)).toBe(2);
+
+      writeFileSync(settings, JSON.stringify({ mcpServers: ["not-a-map"] }));
+      const array = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(array)).toEqual(["MCP_SERVERS_IGNORED"]);
+      expect(codes(array)).not.toContain("SCHEMA_ERROR");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails ~/.claude/settings.json and skips it with --no-user", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-claude-user-settings-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-claude-user-settings-home-"));
+    try {
+      const file = join(home, ".claude", "settings.json");
+      mkdirSync(join(home, ".claude"));
+      writeFileSync(
+        file,
+        JSON.stringify({
+          mcpServers: { user: { command: "node", args: ["--version"] } },
+        }),
+      );
+      const report = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(report.servers.map((server) => server.file)).toEqual([file]);
+      expect(report.servers[0]?.scope).toBe("user");
+      expect(codes(report)).toEqual(["MCP_SERVERS_IGNORED"]);
+      expect(exitCode(report)).toBe(2);
+
+      const hidden = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(codes(hidden)).toEqual(["NO_CONFIG"]);
+      expect(hidden.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("still grades Gemini settings.json and .mcp.json as real server files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-claude-not-settings-"));
+    try {
+      mkdirSync(join(root, ".gemini"));
+      writeFileSync(
+        join(root, ".gemini", "settings.json"),
+        JSON.stringify({
+          mcpServers: { remote: { url: "https://example.com/mcp" } },
+        }),
+      );
+      writeFileSync(
+        join(root, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { local: { command: "node", args: ["--version"] } },
+        }),
+      );
+      const report = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(names(report).sort()).toEqual(["local", "remote"]);
+      expect(codes(report)).not.toContain("MCP_SERVERS_IGNORED");
+      expect(exitCode(report)).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -141,7 +141,9 @@ describe("1.5.0 changelog", () => {
     const notes = changelogSection(changelog, pkg.version);
     const unreleased = changelog.slice(0, changelog.indexOf("## [1.5.0]"));
     expect(unreleased).toContain("## [Unreleased]");
-    expect(unreleased).not.toMatch(/^\s*- /m);
+    expect(unreleased).toContain("MCP_SERVERS_IGNORED");
+    expect(unreleased).toContain("#85");
+    expect(notes).not.toContain("MCP_SERVERS_IGNORED");
     expect(pkg.version).toBe("1.5.0");
     expect(notes.startsWith("## [1.5.0] - 2026-10-22")).toBe(true);
     expect(notes).toContain(".github/mcp.json");

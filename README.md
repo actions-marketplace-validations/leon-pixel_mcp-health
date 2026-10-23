@@ -172,7 +172,7 @@ repos:
 | Cursor | `.cursor/mcp.json`, `mcp.json`, `.mcp.json` | `mcpServers` |
 | VS Code | `.vscode/mcp.json` | `servers`. An `env` value may be a string, a number, or null. `unix:` and `pipe:` URLs are socket transports, including a fragment subpath |
 | Copilot | `.github/mcp.json` | `mcpServers`, or a bare object whose keys are server names. `command` and `args` are stdio. `url` is HTTP. `type: "local"` still uses `command` and `args`. `tools` is an allowlist |
-| Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | `mcpServers` |
+| Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | Permissions and hooks, not servers. An `mcpServers` key is a failure, `MCP_SERVERS_IGNORED`. Project servers belong in `.mcp.json`. A settings file with no `mcpServers` key is skipped |
 | Gemini CLI | `.gemini/settings.json` | `mcpServers`. `httpUrl` is streamable HTTP and wins over `url` and `command`. `$NAME` in an env value is an environment reference. A file with no `mcpServers` key is skipped |
 | Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |
 | Junie | `.junie/mcp/mcp.json` | `mcpServers` |
@@ -180,14 +180,14 @@ repos:
 | Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }`. `"source": "extension"` is an extension server. Comments and trailing commas are allowed |
 | Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `url`, `env`, `http_headers`, `bearer_token_env_var`, `env_http_headers`, `enabled` |
 
-A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, or another settings file with no MCP section is skipped. It is not a failed scan.
+A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, or another settings file with no MCP section is skipped. It is not a failed scan. A Claude Code settings file that does contain `mcpServers` is `MCP_SERVERS_IGNORED`, because Claude Code does not load servers from that file.
 
 **User-level** (disable with `--no-user`):
 
 - Cursor `~/.cursor/mcp.json`
 - VS Code user `mcp.json` (`servers`): `~/Library/Application Support/Code/User/mcp.json` on macOS, `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config/Code/User/mcp.json`) on Linux, or `%APPDATA%/Code/User/mcp.json` on Windows. Insiders and VSCodium are not scanned
 - Copilot `mcp-config.json` (`mcpServers`): `$COPILOT_HOME/mcp-config.json`, or `~/.copilot/mcp-config.json` when `COPILOT_HOME` is unset
-- Claude Code `~/.claude/settings.json`
+- Claude Code `~/.claude/settings.json` is permissions and hooks, not a server list. An `mcpServers` key is `MCP_SERVERS_IGNORED`. User and per-project servers are in `~/.claude.json`
 - Gemini CLI `~/.gemini/settings.json`. When `GEMINI_CLI_HOME` is set, the file is `$GEMINI_CLI_HOME/.gemini/settings.json`. Shape `mcpServers`, including `httpUrl`. A file with no `mcpServers` key is skipped. System settings are not scanned
 - Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. A key matches when it is the same directory as the scan root, including a symlink and macOS `/tmp` versus `/private/tmp`. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
 - Continue `~/.continue/config.yaml` (`mcpServers` list)
@@ -214,6 +214,7 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - Doc placeholders warn in env (`PLACEHOLDER_ENV`), headers, and Cursor `auth` (`PLACEHOLDER_HEADER`): `your-key-here`, `your-token-here`, `your-api-token`, `your-oauth-client-id`, `your-client-secret`, `<token>`, `YOUR_`, `REPLACE_`, empty, and `changeme`. A real token is not a placeholder and is not printed
 - Gemini CLI `$NAME` in an env value is `UNRESOLVED_VARIABLE` when that variable is unset, because the CLI substitutes an empty string. `%NAME%` is the same check on Windows. Other clients do not expand `$NAME`
 - In `.mcp.json` and `~/.claude.json`, a `url` with no `type` is `MISSING_TRANSPORT_TYPE`. Claude Code skips that entry until the type is `http`, `sse`, `ws`, or `streamable-http`. `type: "sdk"` is skipped, not `NO_TRANSPORT`. Cursor `.cursor/mcp.json` remote servers still omit `type`
+- Claude Code does not load `mcpServers` from `.claude/settings.json`, `.claude/settings.local.json`, or `~/.claude/settings.json`. A present key is `MCP_SERVERS_IGNORED` (a failure). Those entries are not checked and are not probed. Move project servers to `.mcp.json` and user servers to `~/.claude.json`. A settings file with no `mcpServers` key is skipped
 
 The initialize request uses protocol revision `2025-11-25`. If the server rejects that method, the probe tries `server/discover` on `2026-07-28`, then `tools/list` on that same revision.
 
