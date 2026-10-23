@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { isVsCodeConfigFile, type LocateOptions } from "./discover.js";
 import { isFloatingPin, splitPackageSpec } from "./npm.js";
+import { CLAUDE_SETTINGS_MCP_SERVERS } from "./parse.js";
 import { isBareEnvToken, lookupEnv } from "./vars.js";
 
 const UNRESOLVED_VAR = /\$\{[^{}]+\}/g;
@@ -436,6 +437,15 @@ export function checkConfig(
   >();
 
   if (file.format === "invalid") {
+    if (file.error === CLAUDE_SETTINGS_MCP_SERVERS) {
+      findings.push({
+        severity: "fail",
+        code: "MCP_SERVERS_IGNORED",
+        message: claudeSettingsIgnoredMessage(file.path),
+        file: file.path,
+      });
+      return { findings, perServer };
+    }
     findings.push({
       severity: "fail",
       code: "SCHEMA_ERROR",
@@ -797,6 +807,15 @@ function missingEnvFileFinding(
     server: server.name,
     file: file.path,
   };
+}
+
+/**
+ * Claude Code does not read `mcpServers` from a settings file.
+ * The basename keeps `settings.local.json` distinct from `settings.json`.
+ */
+export function claudeSettingsIgnoredMessage(file: string): string {
+  const base = file.replace(/\\/g, "/").split("/").pop() || "settings.json";
+  return `Claude Code does not load mcpServers from ${base}. Move project servers to .mcp.json and user servers to ~/.claude.json. This file is only for permissions and hooks.`;
 }
 
 /** `.mcp.json` and `~/.claude.json`, the files Claude Code reads as MCP JSON. */
