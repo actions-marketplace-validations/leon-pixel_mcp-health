@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Warn and fail findings for `COMMAND_NOT_FOUND`, `UNPINNED_PACKAGE`, `BAD_URL`, `BAD_URL_PROTOCOL`, `PLACEHOLDER_ENV`, `PLACEHOLDER_HEADER`, `ENV_FILE_MISSING`, `NO_TRANSPORT`, and `MISSING_TRANSPORT_TYPE` include one copy-paste fix. Human output prints that sentence under the finding. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The fix names the command, package argument, or field and does not include secret values. The config file is not rewritten. There is no `--fix` flag (#88).
+
 ### Fixed
 
 - Claude Code does not load `mcpServers` from `.claude/settings.json`, `.claude/settings.local.json`, or `~/.claude/settings.json`. A present key is `MCP_SERVERS_IGNORED` (a failure) instead of a healthy server. Project servers belong in `.mcp.json`. User servers belong in `~/.claude.json`. A settings file with no `mcpServers` key is still skipped. The entries are not probed. A config-level failure that is not a server row explains exit 2 in the summary (#85).

@@ -76,6 +76,8 @@ export function formatHuman(report: HealthReport): string {
       lines.push(
         `    - ${icons[finding.severity]} ${finding.code}: ${finding.message}`,
       );
+      const hint = finding.hint?.trim();
+      if (hint) lines.push(`      ${hint}`);
     }
     lines.push("");
   }

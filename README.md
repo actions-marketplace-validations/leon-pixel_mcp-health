@@ -65,6 +65,8 @@ Text output labels each server row `project` or `user`. JSON keeps the file path
 
 `--sarif` and `--github-annotations` do not change the exit code. They add a SARIF file and stderr annotations beside the usual report. Ok findings are left out of both.
 
+A warn or fail row for a missing command, an unpinned package, a bad URL, a placeholder, a missing `envFile`, a missing transport, or a Claude Code `url` with no `type` includes one fix line under the finding. Copy that line into the config you already have open. The line names the command, package argument, or field and does not include secret values. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The scan does not rewrite the file. There is no `--fix` flag.
+
 ## GitHub Action
 
 ```yaml
@@ -230,9 +232,11 @@ mcp-health reads the MCP config files already in a repo (and, unless you pass `-
 
 ```text
 [FAIL] broken-binary  (stdio)  project  mcp.json
-    - FAIL COMMAND_NOT_FOUND: ...
+    - FAIL COMMAND_NOT_FOUND: Command not found on PATH: definitely-not-a-real-mcp-binary-xyz
+      Install "definitely-not-a-real-mcp-binary-xyz" so it is on PATH, or change "command" to a program that is already installed.
 [WARN] unpinned  (stdio)  user  ~/.cursor/mcp.json
-    - WARN UNPINNED_PACKAGE: ...
+    - WARN UNPINNED_PACKAGE: Package "@modelcontextprotocol/server-memory" is not version-pinned (recommend name@version)
+      Change the package argument to "@modelcontextprotocol/server-memory@<version>".
 ```
 
 ## Releases
