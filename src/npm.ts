@@ -1,18 +1,76 @@
 import { coerce, satisfies, valid, validRange } from "semver";
 
-/** Parse name@version / @scope/name@version into parts. */
+const PYTHON_NAME = /^([A-Za-z0-9_][A-Za-z0-9_.-]*)/;
+const PYTHON_EXTRAS = /^\[[^\]]*\]/;
+const PYTHON_OP = /^(===|==|~=|!=|<=|>=|<|>)/;
+
+/**
+ * `~=1.4.2` is `>=1.4.2 <1.5.0`. `~=1.4` is `>=1.4.0 <2.0.0`.
+ * A non-numeric tail is left for the caller.
+ */
+function pep440Compatible(version: string): string | undefined {
+  const parts = version.split(".");
+  if (parts.length < 2 || parts.some((part) => !/^\d+$/.test(part))) return undefined;
+  if (parts.length === 2) {
+    return `>=${parts[0]}.${parts[1]}.0 <${Number(parts[0]) + 1}.0.0`;
+  }
+  const head = parts.slice(0, -1);
+  const last = Number(head[head.length - 1]);
+  head[head.length - 1] = String(last + 1);
+  return `>=${version} <${head.join(".")}.0`;
+}
+
+/**
+ * Turn a uv requirement (`==1.2.3`, `>=1,<2`, `~=1.4.2`) into a version
+ * or a semver range. Commas become spaces, which is the range separator
+ * `semver` accepts. An empty operator is not a pin.
+ */
+function normalizePinnedVersion(specifiers: string): string | undefined {
+  const body = specifiers.trim();
+  if (!body) return undefined;
+  const exact = body.match(/^(?:===|==)\s*(\S+)$/);
+  if (exact?.[1]) return exact[1];
+  const compatible = body.match(/^~=\s*([0-9]+(?:\.[0-9]+)*)\s*$/);
+  if (compatible?.[1]) return pep440Compatible(compatible[1]) ?? body;
+  const normalized = body.replace(/,/g, " ").replace(/\s+/g, " ").trim();
+  if (!/(?:===|==|~=|!=|<=|>=|<|>)\s*\S/.test(normalized)) return undefined;
+  return normalized;
+}
+
+/**
+ * uv requirement: `name==1.2.3`, `name[extra]>=1.0`, `name>=1,<2`.
+ * A marker after `;` is not part of the version. npm `name@version` does not match.
+ */
+function splitPythonRequirement(
+  spec: string,
+): { name: string; version: string } | undefined {
+  const withoutMarker = spec.split(";")[0]?.trim() ?? "";
+  const nameMatch = PYTHON_NAME.exec(withoutMarker);
+  if (!nameMatch?.[1]) return undefined;
+  let rest = withoutMarker.slice(nameMatch[1].length).trim();
+  if (PYTHON_EXTRAS.test(rest)) rest = rest.replace(PYTHON_EXTRAS, "").trim();
+  if (!PYTHON_OP.test(rest)) return undefined;
+  const version = normalizePinnedVersion(rest);
+  if (!version) return undefined;
+  return { name: nameMatch[1], version };
+}
+
+/** Parse name@version / @scope/name@version, and a uv requirement, into parts. */
 export function splitPackageSpec(spec: string): {
   name: string;
   version: string | undefined;
 } {
-  if (spec.startsWith("@")) {
-    const m = spec.match(/^(@[^/]+\/[^@]+)(?:@(.+))?$/);
-    if (!m?.[1]) return { name: spec, version: undefined };
+  const trimmed = spec.trim();
+  const python = splitPythonRequirement(trimmed);
+  if (python) return python;
+  if (trimmed.startsWith("@")) {
+    const m = trimmed.match(/^(@[^/]+\/[^@]+)(?:@(.+))?$/);
+    if (!m?.[1]) return { name: trimmed, version: undefined };
     return { name: m[1], version: m[2] };
   }
-  const at = spec.indexOf("@");
-  if (at <= 0) return { name: spec, version: undefined };
-  return { name: spec.slice(0, at), version: spec.slice(at + 1) };
+  const at = trimmed.indexOf("@");
+  if (at <= 0) return { name: trimmed, version: undefined };
+  return { name: trimmed.slice(0, at), version: trimmed.slice(at + 1) };
 }
 
 const FLOATING = new Set(["latest", "next", "*"]);
@@ -30,15 +88,25 @@ function latestVersion(version: string): string | null {
 export function isRangePin(pinned: string): boolean {
   if (isFloatingPin(pinned)) return false;
   if (valid(pinned)) return false;
-  return validRange(pinned) !== null;
+  if (validRange(pinned) !== null) return true;
+  return /^(?:!=|<=|>=|<|>|~=)/.test(pinned);
 }
 
 /**
  * True when the pinned spec does not accept the registry's latest version.
  * Exact versions drift on inequality. Ranges drift only when latest is outside them.
+ * `!=1.2.3` drifts only when latest is that excluded version.
  */
 export function isVersionDrift(pinned: string, latest: string): boolean {
   if (isFloatingPin(pinned)) return true;
+  const excluded = pinned.match(/^!=\s*(.+)$/);
+  if (excluded?.[1]) {
+    const banned = excluded[1].trim();
+    const latestClean = latestVersion(latest);
+    const bannedClean = latestVersion(banned);
+    if (latestClean && bannedClean) return latestClean === bannedClean;
+    return latest.trim() === banned;
+  }
   const latestClean = latestVersion(latest);
   if (!latestClean) return pinned !== latest;
   const range = validRange(pinned);

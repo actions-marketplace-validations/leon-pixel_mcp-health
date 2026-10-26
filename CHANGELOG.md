@@ -18,6 +18,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - A script argument for `node`, `python`, `python3`, `bun`, `deno`, or `tsx`, including the `.exe` and `.cmd` names, that is not a file in that directory is `SCRIPT_NOT_FOUND`. The file is not read. `node -e`, `node --version`, `python -m`, and package-runner arguments stay as they are. `bun run dev` is a package script. `bun run src/index.ts` is a file (#86).
 - Codex user config follows `CODEX_HOME`. A non-empty value reads `$CODEX_HOME/config.toml`. An unset or blank value stays `~/.codex/config.toml`. `--no-user` skips that file either way. A missing file is skipped, not `FILE_NOT_FOUND`. Project `.codex/config.toml` is unchanged (#87).
 - The GitHub Action appends `args` after `--no-user`. Setting `args` to `--probe` or `--online` no longer drops `--no-user`. `include-user: true` scans the runner's user-level configs. Workflows that set `args` in order to read those configs need `include-user: true`. Passing `--no-user` inside `args` still skips them. Annotations, SARIF, and `fail-on-missing` are unchanged (#89).
+- A `uvx` requirement is a pin. `name==1.2.3`, `name[extra]==1.2.3`, and `name>=1.0.0,<2.0.0` are not `UNPINNED_PACKAGE`. `~=1.4.2` is the compatible release `>=1.4.2 <1.5.0`. `name==latest`, `name==next`, and `name==*` stay unpinned. `npx` `name@version` is unchanged (#93).
 
 ## [1.5.0] - 2026-10-22
 
