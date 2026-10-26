@@ -10,6 +10,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Fixed
 
 - Claude Code does not load `mcpServers` from `.claude/settings.json`, `.claude/settings.local.json`, or `~/.claude/settings.json`. A present key is `MCP_SERVERS_IGNORED` (a failure) instead of a healthy server. Project servers belong in `.mcp.json`. User servers belong in `~/.claude.json`. A settings file with no `mcpServers` key is still skipped. The entries are not probed. A config-level failure that is not a server row explains exit 2 in the summary (#85).
+- A `uvx` requirement is a pin. `name==1.2.3`, `name[extra]==1.2.3`, and `name>=1.0.0,<2.0.0` are not `UNPINNED_PACKAGE`. `~=1.4.2` is the compatible release `>=1.4.2 <1.5.0`. `name==latest`, `name==next`, and `name==*` stay unpinned. `npx` `name@version` is unchanged (#93).
 
 ## [1.5.0] - 2026-10-22
 
