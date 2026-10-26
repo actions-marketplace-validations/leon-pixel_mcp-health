@@ -30,6 +30,11 @@ export type Finding = {
   severity: Severity;
   code: string;
   message: string;
+  /**
+   * One remediation sentence. Set for common warn and fail codes.
+   * Omitted when there is nothing to paste. Never includes a secret.
+   */
+  hint?: string;
   server?: string;
   file?: string;
 };

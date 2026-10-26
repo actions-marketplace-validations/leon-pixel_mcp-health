@@ -7,9 +7,18 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Warn and fail findings for `COMMAND_NOT_FOUND`, `UNPINNED_PACKAGE`, `BAD_URL`, `BAD_URL_PROTOCOL`, `PLACEHOLDER_ENV`, `PLACEHOLDER_HEADER`, `ENV_FILE_MISSING`, `NO_TRANSPORT`, and `MISSING_TRANSPORT_TYPE` include one copy-paste fix. Human output prints that sentence under the finding. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The fix names the command, package argument, or field and does not include secret values. The config file is not rewritten. There is no `--fix` flag (#88).
+
 ### Fixed
 
 - Claude Code does not load `mcpServers` from `.claude/settings.json`, `.claude/settings.local.json`, or `~/.claude/settings.json`. A present key is `MCP_SERVERS_IGNORED` (a failure) instead of a healthy server. Project servers belong in `.mcp.json`. User servers belong in `~/.claude.json`. A settings file with no `mcpServers` key is still skipped. The entries are not probed. A config-level failure that is not a server row explains exit 2 in the summary (#85).
+- VS Code (`.vscode/mcp.json` and the user `mcp.json`), Copilot user `mcp-config.json`, Gemini CLI, and Codex use stdio `cwd` for relative command lookup and for `--probe`. A relative `cwd` is resolved from the scan root. `${workspaceFolder}` and the other config variables are expanded first. An omitted `cwd` stays the scan root. A value that still contains `${…}` does not change the directory. Other clients ignore `cwd`. The config file is not rewritten (#86).
+- A script argument for `node`, `python`, `python3`, `bun`, `deno`, or `tsx`, including the `.exe` and `.cmd` names, that is not a file in that directory is `SCRIPT_NOT_FOUND`. The file is not read. `node -e`, `node --version`, `python -m`, and package-runner arguments stay as they are. `bun run dev` is a package script. `bun run src/index.ts` is a file (#86).
+- Codex user config follows `CODEX_HOME`. A non-empty value reads `$CODEX_HOME/config.toml`. An unset or blank value stays `~/.codex/config.toml`. `--no-user` skips that file either way. A missing file is skipped, not `FILE_NOT_FOUND`. Project `.codex/config.toml` is unchanged (#87).
+- The GitHub Action appends `args` after `--no-user`. Setting `args` to `--probe` or `--online` no longer drops `--no-user`. `include-user: true` scans the runner's user-level configs. Workflows that set `args` in order to read those configs need `include-user: true`. Passing `--no-user` inside `args` still skips them. Annotations, SARIF, and `fail-on-missing` are unchanged (#89).
+- A `uvx` requirement is a pin. `name==1.2.3`, `name[extra]==1.2.3`, and `name>=1.0.0,<2.0.0` are not `UNPINNED_PACKAGE`. `~=1.4.2` is the compatible release `>=1.4.2 <1.5.0`. `name==latest`, `name==next`, and `name==*` stay unpinned. `npx` `name@version` is unchanged (#93).
 
 ## [1.5.0] - 2026-10-22
 
