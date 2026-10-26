@@ -55,7 +55,9 @@ Patch release on top of the published 1.2.0 package. IDE input variables and dis
 
 `1.4.0` is published. npm `latest` and the `v1` Action tag track that release.
 
-Still open: Copilot's committed `.github/mcp.json`, and naming a fix in the report without writing config files.
+Still open: Copilot's committed `.github/mcp.json`.
+
+The report includes a copy-paste fix for a finding and does not write config files.
 
 ## Out of scope
 

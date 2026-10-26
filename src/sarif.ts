@@ -54,6 +54,14 @@ export function lineOfServer(file: string | undefined, server?: string): number 
   }
 }
 
+function findingText(finding: Finding): string {
+  const text = finding.server
+    ? `${finding.server}: ${finding.message}`
+    : finding.message;
+  const hint = finding.hint?.trim();
+  return hint ? `${text}\n${hint}` : text;
+}
+
 export function buildSarif(report: HealthReport): Record<string, unknown> {
   const findings = reportFindings(report);
   const base = annotationRoot(report.root);
@@ -90,9 +98,7 @@ export function buildSarif(report: HealthReport): Record<string, unknown> {
             ruleId: finding.code,
             level: levelFor(finding.severity),
             message: {
-              text: finding.server
-                ? `${finding.server}: ${finding.message}`
-                : finding.message,
+              text: findingText(finding),
             },
             locations: [
               {
@@ -126,9 +132,7 @@ export function formatAnnotations(report: HealthReport): string {
     const file = artifactUri(base, finding.file);
     const line = lineOfServer(finding.file, finding.server);
     const title = escapeWorkflowProperty(finding.code);
-    const message = escapeWorkflowData(
-      finding.server ? `${finding.server}: ${finding.message}` : finding.message,
-    );
+    const message = escapeWorkflowData(findingText(finding));
     lines.push(
       `::${command} file=${escapeWorkflowProperty(file)},line=${line},title=${title}::${message}`,
     );

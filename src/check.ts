@@ -6,6 +6,17 @@ import {
   isVsCodeConfigFile,
   type LocateOptions,
 } from "./discover.js";
+import {
+  badUrlHint,
+  badUrlProtocolHint,
+  commandNotFoundHint,
+  envFileMissingHint,
+  missingTransportTypeHint,
+  noTransportHint,
+  placeholderEnvHint,
+  placeholderHeaderHint,
+  unpinnedPackageHint,
+} from "./hints.js";
 import { isFloatingPin, splitPackageSpec } from "./npm.js";
 import { CLAUDE_SETTINGS_MCP_SERVERS } from "./parse.js";
 import { isBareEnvToken, lookupEnv } from "./vars.js";
@@ -220,6 +231,18 @@ function originalHttpUrl(server: ParsedServer): string {
   if (typeof server.raw.url === "string") return server.raw.url;
   if (typeof server.raw.serverUrl === "string") return server.raw.serverUrl;
   return server.transport.kind === "http" ? server.transport.url : "";
+}
+
+/** Gemini `httpUrl`, then `url`, then Windsurf `serverUrl`. */
+function configuredUrlField(server: ParsedServer): string {
+  if (typeof server.raw.httpUrl === "string" && server.raw.httpUrl.trim()) {
+    return "httpUrl";
+  }
+  if (typeof server.raw.url === "string" && server.raw.url.trim()) return "url";
+  if (typeof server.raw.serverUrl === "string" && server.raw.serverUrl.trim()) {
+    return "serverUrl";
+  }
+  return "url";
 }
 
 /** Cursor `disabled: true`, or Codex/Zed `enabled: false`. */
@@ -884,6 +907,7 @@ export function checkConfig(
         severity: "fail",
         code: "NO_TRANSPORT",
         message: "Server has neither command nor url",
+        hint: noTransportHint(),
         server: server.name,
         file: file.path,
       });
@@ -899,6 +923,7 @@ export function checkConfig(
               severity: "fail",
               code: "BAD_URL_PROTOCOL",
               message: `URL protocol ${u.protocol} is not supported (use http, https, ws, wss, unix, or pipe)`,
+              hint: badUrlProtocolHint(configuredUrlField(server), u.protocol),
               server: server.name,
               file: file.path,
             });
@@ -912,6 +937,7 @@ export function checkConfig(
               original !== server.transport.url
                 ? "Invalid URL after expanding config variables"
                 : `Invalid URL: ${server.transport.url}`,
+            hint: badUrlHint(configuredUrlField(server)),
             server: server.name,
             file: file.path,
           });
@@ -941,6 +967,7 @@ export function checkConfig(
           severity: "fail",
           code: "COMMAND_NOT_FOUND",
           message: `Command not found on PATH: ${command}`,
+          hint: commandNotFoundHint(command),
           server: server.name,
           file: file.path,
         });
@@ -974,6 +1001,7 @@ export function checkConfig(
             severity: "warn",
             code: "UNPINNED_PACKAGE",
             message: `Package "${pkg}" is not version-pinned (recommend name@version)`,
+            hint: unpinnedPackageHint(pkg),
             server: server.name,
             file: file.path,
           });
@@ -1001,6 +1029,7 @@ export function checkConfig(
         code: "MISSING_TRANSPORT_TYPE",
         message:
           'Claude Code skips a url entry with no type. Add "type": "http", "sse", or "ws".',
+        hint: missingTransportTypeHint(),
         server: server.name,
         file: file.path,
       });
@@ -1018,6 +1047,7 @@ export function checkConfig(
             severity: "warn",
             code: "PLACEHOLDER_ENV",
             message: `Env ${key} looks unset or placeholder`,
+            hint: placeholderEnvHint(key),
             server: server.name,
             file: file.path,
           });
@@ -1145,6 +1175,7 @@ function missingEnvFileFinding(
     severity: "warn",
     code: "ENV_FILE_MISSING",
     message: `envFile is not a file: ${value}`,
+    hint: envFileMissingHint(value),
     server: server.name,
     file: file.path,
   };
@@ -1243,6 +1274,7 @@ function warnPlaceholderFields(
       severity: "warn",
       code: "PLACEHOLDER_HEADER",
       message: `${label} ${key} looks like a placeholder`,
+      hint: placeholderHeaderHint(field, key),
       server: server.name,
       file,
     });
