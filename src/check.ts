@@ -415,6 +415,11 @@ function firstPackageArg(args: string[], launcher: string): string | undefined {
   return undefined;
 }
 
+/** `uvx` installs from PyPI. npx, npm exec, bunx, pnpm, and yarn install from npm. */
+export function packageRegistry(command: string): "npm" | "pypi" {
+  return commandBasename(command) === "uvx" ? "pypi" : "npm";
+}
+
 /**
  * Package spec launched by npx, npm exec, uvx, bunx, pnpm dlx, pnpm exec, or yarn dlx.
  * `--from <spec>` wins. Flags (`-y`, `--yes`, `--quiet`) and the `dlx` / `exec`

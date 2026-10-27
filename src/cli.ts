@@ -39,7 +39,7 @@ program
   )
   .option(
     "--online",
-    "Query npm registry for package drift (network required)",
+    "Query npm for package drift, and PyPI for uvx (network required)",
     false,
   )
   .option(

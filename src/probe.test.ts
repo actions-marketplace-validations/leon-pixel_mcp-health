@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { exitCode, formatHuman } from "./report.js";
+import { exitCode, formatHuman, formatJson } from "./report.js";
 import { runCheck } from "./run.js";
+import { buildSarif, formatAnnotations } from "./sarif.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = resolve(here, "..", "fixtures");
@@ -23,8 +24,9 @@ function send(
   status: number,
   body: string,
   contentType: string,
+  extra: Record<string, string> = {},
 ) {
-  res.writeHead(status, { "content-type": contentType });
+  res.writeHead(status, { "content-type": contentType, ...extra });
   res.end(body);
 }
 
@@ -160,14 +162,20 @@ describe("stdio probe", () => {
 
 describe("http probe", () => {
   it("sends headers, reads SSE, treats 401 as a failure, and can discover", async () => {
-    const seen: { url?: string; authorization?: string; protocol?: string; body: string }[] =
-      [];
+    const seen: {
+      url?: string;
+      authorization?: string;
+      protocol?: string;
+      session?: string | string[];
+      body: string;
+    }[] = [];
     const server = createServer(async (req, res) => {
       const body = await readBody(req);
       seen.push({
         url: req.url,
         authorization: req.headers.authorization,
         protocol: req.headers["mcp-protocol-version"] as string | undefined,
+        session: req.headers["mcp-session-id"],
         body,
       });
       const url = req.url ?? "/";
@@ -344,9 +352,16 @@ describe("http probe", () => {
       const authed = seen.find((entry) => entry.url === "/mcp");
       expect(authed?.authorization).toBe("Bearer s3cret");
       expect(authed?.protocol).toBe("2025-11-25");
+      expect(authed?.session).toBeUndefined();
       expect(JSON.parse(authed?.body ?? "{}").params.protocolVersion).toBe(
         "2025-11-25",
       );
+      const mcpCalls = seen.filter((entry) => entry.url === "/mcp");
+      expect(mcpCalls.map((entry) => JSON.parse(entry.body).method)).toEqual([
+        "initialize",
+        "tools/list",
+      ]);
+      expect(mcpCalls.every((entry) => entry.session === undefined)).toBe(true);
       const modernCalls = seen.filter((entry) => entry.url === "/modern");
       expect(modernCalls.map((entry) => JSON.parse(entry.body).method)).toEqual([
         "initialize",
@@ -355,6 +370,7 @@ describe("http probe", () => {
       ]);
       expect(modernCalls[1]?.protocol).toBe("2026-07-28");
       expect(modernCalls[2]?.protocol).toBe("2026-07-28");
+      expect(modernCalls.every((entry) => entry.session === undefined)).toBe(true);
       expect(seen.filter((entry) => entry.url === "/deny")).toHaveLength(1);
     } finally {
       delete process.env.MCP_HEALTH_HTTP_TOKEN;
@@ -527,6 +543,319 @@ describe("http probe", () => {
       expect(exitCode(report)).toBe(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sends Mcp-Session-Id on later requests and does not print it", async () => {
+    const legacySession = "sess-legacy-do-not-print";
+    const initSession = "sess-init-do-not-print";
+    const discoverSession = "sess-discover-do-not-print";
+    const freshSession = "sess-fresh-do-not-print";
+    const secrets = [legacySession, initSession, discoverSession, freshSession];
+
+    const seen: {
+      url?: string;
+      method?: string;
+      session?: string | string[];
+      protocol?: string | string[];
+    }[] = [];
+
+    const server = createServer(async (req, res) => {
+      const body = await readBody(req);
+      const url = req.url ?? "/";
+      let payload: { id?: number; method?: string } = {};
+      try {
+        payload = JSON.parse(body) as { id?: number; method?: string };
+      } catch {
+        payload = {};
+      }
+      seen.push({
+        url,
+        method: payload.method,
+        session: req.headers["mcp-session-id"],
+        protocol: req.headers["mcp-protocol-version"],
+      });
+
+      if (payload.method === "notifications/initialized") {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+
+      const tools = JSON.stringify({
+        jsonrpc: "2.0",
+        id: payload.id ?? 3,
+        result: { tools: [{ name: "echo" }] },
+      });
+      const initialized = JSON.stringify({
+        jsonrpc: "2.0",
+        id: payload.id ?? 1,
+        result: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          serverInfo: { name: "session", version: "0" },
+        },
+      });
+      const rejectSession = () => {
+        send(
+          res,
+          400,
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id ?? 3,
+            error: { code: -32600, message: "session required" },
+          }),
+          "application/json",
+        );
+      };
+
+      if (url === "/session" || url === "/sse" || url === "/fresh") {
+        const expected = url === "/fresh" ? freshSession : legacySession;
+        if (payload.method === "tools/list") {
+          if (req.headers["mcp-session-id"] !== expected) {
+            rejectSession();
+            return;
+          }
+          send(res, 200, tools, "application/json");
+          return;
+        }
+        if (url === "/sse") {
+          send(res, 200, `data: ${initialized}\n\n`, "text/event-stream", {
+            "Mcp-Session-Id": legacySession,
+          });
+          return;
+        }
+        send(res, 200, initialized, "application/json", { "Mcp-Session-Id": expected });
+        return;
+      }
+
+      if (url === "/discover") {
+        if (payload.method === "initialize") {
+          send(
+            res,
+            400,
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: payload.id ?? 1,
+              error: { code: -32601, message: "Method not found" },
+            }),
+            "application/json",
+            { "Mcp-Session-Id": initSession },
+          );
+          return;
+        }
+        if (payload.method === "server/discover") {
+          send(
+            res,
+            200,
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: payload.id ?? 2,
+              result: { supportedVersions: ["2026-07-28"], capabilities: {} },
+            }),
+            "application/json",
+            { "Mcp-Session-Id": discoverSession },
+          );
+          return;
+        }
+        if (payload.method === "tools/list") {
+          if (req.headers["mcp-session-id"] !== discoverSession) {
+            rejectSession();
+            return;
+          }
+          send(res, 200, tools, "application/json");
+          return;
+        }
+      }
+
+      if (url === "/plain" || url === "/keep" || url === "/blank") {
+        if (payload.method === "tools/list") {
+          if (url !== "/keep" && req.headers["mcp-session-id"] !== undefined) {
+            rejectSession();
+            return;
+          }
+          send(res, 200, tools, "application/json");
+          return;
+        }
+        send(
+          res,
+          200,
+          initialized,
+          "application/json",
+          url === "/blank" ? { "Mcp-Session-Id": "   " } : {},
+        );
+        return;
+      }
+
+      if (url === "/boom") {
+        send(
+          res,
+          200,
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id ?? 1,
+            error: { code: -32603, message: "initialize failed" },
+          }),
+          "application/json",
+          { "Mcp-Session-Id": legacySession },
+        );
+        return;
+      }
+
+      if (url === "/down") {
+        send(res, 500, "nope", "text/plain", { "Mcp-Session-Id": legacySession });
+        return;
+      }
+
+      send(res, 500, "unhandled", "text/plain");
+    });
+
+    await new Promise<void>((resolveListen) => {
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    const base = `http://127.0.0.1:${address.port}`;
+    const dir = mkdtempSync(join(tmpdir(), "mcp-health-session-"));
+    const file = join(dir, "mcp.json");
+    const original = JSON.stringify({
+      mcpServers: {
+        session: { url: `${base}/session` },
+        sse: { url: `${base}/sse` },
+        fresh: {
+          url: `${base}/fresh`,
+          headers: { "Mcp-Session-Id": "stale-config-session" },
+        },
+        discover: { url: `${base}/discover` },
+        plain: { url: `${base}/plain` },
+        keep: {
+          url: `${base}/keep`,
+          headers: { "Mcp-Session-Id": "stale-config-session" },
+        },
+        blank: { url: `${base}/blank` },
+        boom: { url: `${base}/boom` },
+        down: { url: `${base}/down` },
+      },
+    });
+    writeFileSync(file, original);
+
+    const calls = (path: string) => seen.filter((entry) => entry.url === path);
+    const methods = (path: string) => calls(path).map((entry) => entry.method);
+    const rendered = (report: Awaited<ReturnType<typeof runCheck>>) =>
+      [
+        formatHuman(report),
+        formatJson(report),
+        JSON.stringify(buildSarif(report)),
+        formatAnnotations(report),
+      ].join("\n");
+
+    try {
+      const report = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        probe: true,
+        probeTimeoutMs: 4000,
+      });
+      const byName = new Map(report.servers.map((serverReport) => [serverReport.name, serverReport]));
+      const codes = (name: string) => byName.get(name)?.findings.map((finding) => finding.code) ?? [];
+
+      expect(methods("/session")).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+      ]);
+      expect(calls("/session")[0]?.session).toBeUndefined();
+      expect(calls("/session")[1]?.session).toBe(legacySession);
+      expect(calls("/session")[2]?.session).toBe(legacySession);
+      expect(calls("/session")[1]?.protocol).toBe("2025-11-25");
+      expect(calls("/session")[2]?.protocol).toBe("2025-11-25");
+
+      expect(methods("/sse")).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+      ]);
+      expect(calls("/sse")[0]?.session).toBeUndefined();
+      expect(calls("/sse")[1]?.session).toBe(legacySession);
+      expect(calls("/sse")[2]?.session).toBe(legacySession);
+
+      expect(methods("/fresh")).toEqual([
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+      ]);
+      expect(calls("/fresh")[0]?.session).toBe("stale-config-session");
+      expect(calls("/fresh")[1]?.session).toBe(freshSession);
+      expect(calls("/fresh")[2]?.session).toBe(freshSession);
+
+      expect(methods("/discover")).toEqual(["initialize", "server/discover", "tools/list"]);
+      expect(calls("/discover")[0]?.session).toBeUndefined();
+      expect(calls("/discover")[1]?.session).toBe(initSession);
+      expect(calls("/discover")[2]?.session).toBe(discoverSession);
+      expect(calls("/discover")[1]?.protocol).toBe("2026-07-28");
+      expect(calls("/discover")[2]?.protocol).toBe("2026-07-28");
+
+      expect(methods("/plain")).toEqual(["initialize", "tools/list"]);
+      expect(calls("/plain").every((entry) => entry.session === undefined)).toBe(true);
+      expect(methods("/blank")).toEqual(["initialize", "tools/list"]);
+      expect(calls("/blank").every((entry) => entry.session === undefined)).toBe(true);
+      expect(methods("/keep")).toEqual(["initialize", "tools/list"]);
+      expect(calls("/keep").every((entry) => entry.session === "stale-config-session")).toBe(true);
+
+      expect(methods("/boom")).toEqual(["initialize"]);
+      expect(methods("/down")).toEqual(["initialize"]);
+
+      for (const name of ["session", "sse", "fresh", "discover", "plain", "keep", "blank"]) {
+        expect(byName.get(name)?.status, name).toBe("ok");
+        expect(codes(name), name).toContain("PROBE_OK");
+        expect(codes(name), name).toContain("TOOLS_OK");
+        expect(codes(name), name).not.toContain("TOOLS_LIST_FAILED");
+        expect(
+          byName.get(name)?.findings.every((finding) => finding.severity === "ok"),
+          name,
+        ).toBe(true);
+      }
+      expect(
+        byName.get("discover")?.findings.find((finding) => finding.code === "PROBE_OK")?.message,
+      ).toMatch(/discover/);
+      expect(byName.get("boom")?.status).toBe("fail");
+      expect(codes("boom")).toContain("PROBE_INIT_ERROR");
+      expect(codes("boom")).not.toContain("TOOLS_OK");
+      expect(codes("boom")).not.toContain("TOOLS_LIST_FAILED");
+      expect(byName.get("down")?.status).toBe("fail");
+      expect(codes("down")).toContain("PROBE_HTTP_ERROR");
+      expect(codes("down")).not.toContain("TOOLS_LIST_FAILED");
+
+      const text = rendered(report);
+      for (const secret of secrets) expect(text).not.toContain(secret);
+      expect(text).not.toContain("stale-config-session");
+      expect(readFileSync(file, "utf8")).toBe(original);
+
+      seen.length = 0;
+      const skipped = await runCheck({
+        root: dir,
+        includeUserConfig: false,
+        probe: true,
+        probeListTools: false,
+        probeTimeoutMs: 4000,
+      });
+      expect(methods("/session")).toEqual(["initialize", "notifications/initialized"]);
+      expect(calls("/session")[1]?.session).toBe(legacySession);
+      expect(methods("/plain")).toEqual(["initialize"]);
+      expect(methods("/discover")).toEqual(["initialize", "server/discover"]);
+      const skippedSession = skipped.servers.find((entry) => entry.name === "session");
+      expect(skippedSession?.status).toBe("ok");
+      expect(skippedSession?.findings.map((finding) => finding.code)).toContain("PROBE_OK");
+      expect(skippedSession?.findings.map((finding) => finding.code)).not.toContain("TOOLS_OK");
+      expect(skippedSession?.findings.map((finding) => finding.code)).not.toContain(
+        "TOOLS_LIST_FAILED",
+      );
+      const skippedText = rendered(skipped);
+      for (const secret of secrets) expect(skippedText).not.toContain(secret);
+      expect(readFileSync(file, "utf8")).toBe(original);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
   });
 });

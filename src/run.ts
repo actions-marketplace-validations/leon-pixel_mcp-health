@@ -11,11 +11,13 @@ import {
   extractNpxPackage,
   isExtensionProvided,
   isServerDisabled,
+  packageRegistry,
   serverHasUnresolved,
   stdioWorkingDirectory,
 } from "./check.js";
 import {
   fetchNpmLatest,
+  fetchPypiLatest,
   isFloatingPin,
   isRangePin,
   isVersionDrift,
@@ -43,7 +45,7 @@ export type RunOptions = {
   root: string;
   files?: string[];
   includeUserConfig?: boolean;
-  /** Query npm registry for pinned package drift. */
+  /** Query npm, or PyPI for uvx, for pinned package drift. */
   online?: boolean;
   /** Attempt MCP initialize handshake. */
   probe?: boolean;
@@ -250,7 +252,10 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
         );
         if (pkg) {
           const { name, version } = splitPackageSpec(pkg);
-          const latest = await fetchNpmLatest(name);
+          const registry = packageRegistry(server.transport.command);
+          const latest =
+            registry === "pypi" ? await fetchPypiLatest(name) : await fetchNpmLatest(name);
+          const source = registry === "pypi" ? "PyPI" : "npm";
           if (!latest.ok) {
             result.findings.push({
               severity: "warn",
@@ -264,15 +269,15 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
             result.findings.push({
               severity: "warn",
               code: "NPM_LATEST",
-              message: `Unpinned; npm latest is ${latest.latest} (pin ${name}@${latest.latest})`,
+              message: `Unpinned; ${source} latest is ${latest.latest} (pin ${name}@${latest.latest})`,
               server: server.name,
               file: path,
             });
             result.status = worst(result.status, "warn");
           } else if (isVersionDrift(version, latest.latest)) {
             const message = isRangePin(version)
-              ? `Pinned range ${version} does not include npm latest ${latest.latest}`
-              : `Pinned ${version} but npm latest is ${latest.latest}`;
+              ? `Pinned range ${version} does not include ${source} latest ${latest.latest}`
+              : `Pinned ${version} but ${source} latest is ${latest.latest}`;
             result.findings.push({
               severity: "warn",
               code: "NPM_DRIFT",
@@ -283,8 +288,8 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
             result.status = worst(result.status, "warn");
           } else {
             const message = isRangePin(version)
-              ? `Pinned range ${version} includes npm latest ${latest.latest}`
-              : `Pinned ${version} matches npm latest`;
+              ? `Pinned range ${version} includes ${source} latest ${latest.latest}`
+              : `Pinned ${version} matches ${source} latest`;
             result.findings.push({
               severity: "ok",
               code: "NPM_CURRENT",
