@@ -25,6 +25,7 @@ describe("zero-config check", () => {
       expect(message).toContain(".cursor/mcp.json");
       expect(message).toContain(".vscode/mcp.json");
       expect(message).toContain("Gemini CLI");
+      expect(message).toContain("Antigravity");
       expect(message).toContain("Copilot");
       expect(message).toContain("--allow-missing");
       expect(formatHuman(warned)).toContain(message);

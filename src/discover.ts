@@ -12,6 +12,7 @@ const PROJECT_CANDIDATES = [
   ".claude/settings.json",
   ".claude/settings.local.json",
   ".gemini/settings.json",
+  ".agents/mcp_config.json",
   ".junie/mcp/mcp.json",
   ".continue/config.yaml",
   ".windsurf/mcp_config.json",
@@ -112,6 +113,15 @@ function geminiUserPath(options: LocateOptions = {}): string {
   const { home, env } = locate(options);
   const geminiHome = env.GEMINI_CLI_HOME?.trim();
   return join(geminiHome || home, ".gemini", "settings.json");
+}
+
+/**
+ * Google Antigravity user MCP config.
+ * This is not Gemini CLI's `settings.json`. `GEMINI_CLI_HOME` does not move it.
+ */
+function antigravityUserPath(options: LocateOptions = {}): string {
+  const { home } = locate(options);
+  return join(home, ".gemini", "config", "mcp_config.json");
 }
 
 /**
@@ -282,6 +292,7 @@ function userLevelPaths(options: LocateOptions = {}): string[] {
     claudeCodeUserPath(options),
     ...claudeDesktopPaths(options),
     geminiUserPath(options),
+    antigravityUserPath(options),
     ...windsurfUserPaths(options),
     ...zedUserPaths(options),
     codexUserPath(options),
@@ -320,6 +331,7 @@ export const __testing = {
   claudeCodeUserPath,
   clineUserPath,
   geminiUserPath,
+  antigravityUserPath,
   vscodeUserMcpPath,
   copilotUserPath,
   codexUserPath,
