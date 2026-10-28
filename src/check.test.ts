@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   isVersionPinned,
   extractNpxPackage,
+  packageRegistry,
   resolveCommandOnPath,
   commandLookupEnv,
   commandNeedsShell,
@@ -75,6 +76,13 @@ describe("extractNpxPackage", () => {
       "mcp-server-git",
     );
     expect(extractNpxPackage("uvx.exe", ["pkg@1"])).toBe("pkg@1");
+    expect(packageRegistry("uvx")).toBe("pypi");
+    expect(packageRegistry("/usr/local/bin/uvx")).toBe("pypi");
+    expect(packageRegistry("uvx.exe")).toBe("pypi");
+    expect(packageRegistry("npx")).toBe("npm");
+    expect(packageRegistry("bunx")).toBe("npm");
+    expect(packageRegistry("pnpm")).toBe("npm");
+    expect(packageRegistry("yarn")).toBe("npm");
 
     expect(extractNpxPackage("bunx", ["--quiet", "some-mcp-server"])).toBe(
       "some-mcp-server",
@@ -199,12 +207,20 @@ describe("unpinned uvx, bunx, pnpm, and yarn launches", () => {
         env: {},
         online: true,
       });
-      expect(urls).toContain("https://registry.npmjs.org/mcp-server-git/latest");
+      expect(urls).toContain("https://pypi.org/pypi/mcp-server-git/json");
+      expect(urls).not.toContain("https://registry.npmjs.org/mcp-server-git/latest");
       expect(urls).toContain("https://registry.npmjs.org/some-mcp-server/latest");
+      expect(urls).toContain("https://registry.npmjs.org/some-bun-server/latest");
+      expect(urls).toContain("https://registry.npmjs.org/some-yarn-server/latest");
+      expect(urls).toContain("https://registry.npmjs.org/other-mcp/latest");
       expect(urls).not.toContain("https://registry.npmjs.org/dlx/latest");
       expect(urls).not.toContain("https://registry.npmjs.org/--quiet/latest");
-      expect(messageFor(report, "uvx-pinned", "NPM_LOOKUP_FAILED")).toContain(
-        "npm registry HTTP 404 for mcp-server-git",
+      expect(urls).not.toContain("https://pypi.org/pypi/some-mcp-server/json");
+      const uvxMiss = messageFor(report, "uvx-pinned", "NPM_LOOKUP_FAILED");
+      expect(uvxMiss).toContain("PyPI HTTP 404 for mcp-server-git");
+      expect(uvxMiss).not.toContain("npm registry");
+      expect(messageFor(report, "pnpm-loose", "NPM_LOOKUP_FAILED")).toContain(
+        "npm registry HTTP 404 for some-mcp-server",
       );
       expect(codesFor(report, "uvx-pinned")).not.toContain("UNPINNED_PACKAGE");
       expect(codesFor(report, "pnpm-loose")).toContain("NPM_LOOKUP_FAILED");
@@ -1256,8 +1272,13 @@ describe("floating package tags", () => {
         .find((server) => server.name === "playwright")
         ?.findings.find((finding) => finding.code === "NPM_LATEST");
       expect(latest?.message).toContain("Unpinned");
+      expect(latest?.message).toContain("npm latest");
       expect(latest?.message).toContain("@playwright/mcp@9.9.9");
       expect(latest?.message).not.toContain("Pinned");
+      expect(latest?.message).not.toContain("PyPI");
+      const calls = fetchSpy.mock.calls.map((call) => String(call[0]));
+      expect(calls).toContain("https://registry.npmjs.org/@playwright%2Fmcp/latest");
+      expect(calls.every((url) => !url.includes("pypi.org"))).toBe(true);
       expect(
         online.servers
           .find((server) => server.name === "pinned")

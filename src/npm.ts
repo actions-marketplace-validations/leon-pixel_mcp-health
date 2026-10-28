@@ -157,3 +157,69 @@ export async function fetchNpmLatest(
     options.signal?.removeEventListener("abort", onAbort);
   }
 }
+
+function pypiErrorDetail(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? err.cause : undefined;
+  const code =
+    cause &&
+    typeof cause === "object" &&
+    "code" in cause &&
+    typeof cause.code === "string"
+      ? cause.code
+      : undefined;
+  if (code && !message.includes(code)) return `${message}: ${code}`;
+  return message;
+}
+
+/**
+ * Latest release on PyPI. `info.version` in the project JSON is that release.
+ * Requirement specifiers are not part of `name`.
+ */
+export async function fetchPypiLatest(
+  name: string,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<NpmLatestResult> {
+  const timeoutMs = options.timeoutMs ?? 8_000;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onAbort = () => controller.abort();
+  options.signal?.addEventListener("abort", onAbort);
+
+  try {
+    const url = `https://pypi.org/pypi/${encodeURIComponent(name)}/json`;
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        name,
+        error: `PyPI HTTP ${res.status} for ${name}`,
+      };
+    }
+    const body = (await res.json()) as { info?: { version?: unknown } };
+    const version = body?.info?.version;
+    if (typeof version !== "string" || version.trim() === "") {
+      return { ok: false, name, error: `No version in PyPI latest for ${name}` };
+    }
+    return { ok: true, name, latest: version.trim() };
+  } catch (err) {
+    if (timedOut) {
+      return { ok: false, name, error: `PyPI lookup timed out for ${name}` };
+    }
+    return {
+      ok: false,
+      name,
+      error: `PyPI lookup failed for ${name}: ${pypiErrorDetail(err)}`,
+    };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
