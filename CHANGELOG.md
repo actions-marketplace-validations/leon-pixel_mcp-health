@@ -10,6 +10,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Added
 
 - Warn and fail findings for `COMMAND_NOT_FOUND`, `UNPINNED_PACKAGE`, `BAD_URL`, `BAD_URL_PROTOCOL`, `PLACEHOLDER_ENV`, `PLACEHOLDER_HEADER`, `ENV_FILE_MISSING`, `NO_TRANSPORT`, and `MISSING_TRANSPORT_TYPE` include one copy-paste fix. Human output prints that sentence under the finding. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The fix names the command, package argument, or field and does not include secret values. The config file is not rewritten. There is no `--fix` flag (#88).
+- Discover Google Antigravity project `.agents/mcp_config.json` and user `~/.gemini/config/mcp_config.json` (#96). `--no-user` skips the user file. A missing file is skipped, not `FILE_NOT_FOUND`. `mcpServers` uses the existing parser: `command` and `args` are stdio, and `serverUrl` or `url` is a remote URL. A file with no `mcpServers` key is skipped. `GEMINI_CLI_HOME` still selects Gemini CLI `.gemini/settings.json` and does not move the Antigravity file. The config file is not rewritten.
 
 ### Fixed
 

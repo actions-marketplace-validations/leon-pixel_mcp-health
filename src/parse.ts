@@ -627,6 +627,21 @@ export function parseConfigFile(path: string, options: ParseOptions = {}): Confi
   return parseJsonDocument(path, text);
 }
 
+/**
+ * Antigravity `mcp_config.json` (project `.agents/` or user `~/.gemini/config/`).
+ * A file with no `mcpServers` key is normal. Windsurf and Devin `mcp_config.json`
+ * paths do not match.
+ */
+function isAntigravityMcpConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".agents/mcp_config.json" ||
+    normalized.endsWith("/.agents/mcp_config.json") ||
+    normalized === ".gemini/config/mcp_config.json" ||
+    normalized.endsWith("/.gemini/config/mcp_config.json")
+  );
+}
+
 /** Settings-style files may exist without an MCP section — don't hard-fail. */
 export function isOptionalMcpFile(path: string): boolean {
   const normalized = path.replace(/\\/g, "/");
@@ -635,6 +650,7 @@ export function isOptionalMcpFile(path: string): boolean {
     normalized.endsWith("/settings.local.json") ||
     normalized.endsWith("/claude_desktop_config.json") ||
     normalized.endsWith(".codex/config.toml") ||
+    isAntigravityMcpConfig(path) ||
     isClaudeUserConfig(path) ||
     isContinueConfig(path)
   );
