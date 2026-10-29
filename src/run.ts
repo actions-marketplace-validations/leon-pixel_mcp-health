@@ -141,6 +141,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       parsed = parseConfigFile(path, {
         root,
         platform: options.platform,
+        env: options.env,
       });
     } catch (err) {
       servers.push({
@@ -191,7 +192,10 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
 
       if (
         parsed.format === "none" &&
-        isOptionalMcpFile(path) &&
+        isOptionalMcpFile(path, {
+          platform: options.platform,
+          env: options.env,
+        }) &&
         findings.every((f) => f.code === "NO_MCP_SECTION")
       ) {
         status = "ok";
@@ -373,7 +377,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
           severity,
           code: "NO_CONFIG",
           message:
-            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Antigravity, Copilot, Windsurf, Zed, or Codex project or user paths). Add a project file such as .cursor/mcp.json or .vscode/mcp.json, or pass --allow-missing to exit 0 when this repository is supposed to have no MCP config.",
+            "No MCP config files found (Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Copilot, Windsurf, Zed, or Codex project or user paths). Add a project file such as .cursor/mcp.json or .vscode/mcp.json, or pass --allow-missing to exit 0 when this repository is supposed to have no MCP config.",
           file: root,
         },
       ],
