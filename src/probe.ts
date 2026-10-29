@@ -633,7 +633,17 @@ type HttpExchange = {
   status: number;
   message?: RpcMessage;
   wwwAuthenticate?: string;
+  /** `Mcp-Session-Id` from this response, when the server minted one. */
+  sessionId?: string;
 };
+
+/** Streamable HTTP session id. An empty header is not a session. */
+function mcpSessionId(headers: Headers): string | undefined {
+  const value = headers.get("mcp-session-id");
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 export function describeError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
@@ -670,17 +680,18 @@ async function postJson(
       body: JSON.stringify(body),
     });
     const wwwAuthenticate = res.headers.get("www-authenticate") ?? undefined;
+    const sessionId = mcpSessionId(res.headers);
     const id = typeof body.id === "number" ? body.id : 1;
     let message: RpcMessage | undefined;
     try {
       message = await readMatchingRpc(res, id);
     } catch (err) {
       if (res.status === 401 || res.status === 403) {
-        return { status: res.status, wwwAuthenticate };
+        return { status: res.status, wwwAuthenticate, sessionId };
       }
       throw err;
     }
-    return { status: res.status, message, wwwAuthenticate };
+    return { status: res.status, message, wwwAuthenticate, sessionId };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error(`Timed out waiting for HTTP response (${timeoutMs}ms)`);
@@ -706,6 +717,7 @@ function resolvedEnvHeaders(server: ParsedServer): Record<string, string> {
 function requestHeaders(
   server: ParsedServer,
   protocol: string,
+  sessionId?: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {
     ...stringRecord(server.raw.headers),
@@ -719,7 +731,40 @@ function requestHeaders(
     const value = process.env[bearerEnv];
     if (typeof value === "string" && value) headers.Authorization = `Bearer ${value}`;
   }
+  if (sessionId) {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "mcp-session-id") delete headers[key];
+    }
+    headers["Mcp-Session-Id"] = sessionId;
+  }
   return headers;
+}
+
+/**
+ * `notifications/initialized` has no JSON-RPC id. Wait for the HTTP
+ * response, then continue. A notification error does not fail the handshake.
+ */
+async function postNotification(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers,
+      body: JSON.stringify(body),
+    });
+    await res.body?.cancel().catch(() => undefined);
+  } catch {
+    /* tools/list reports its own result */
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function httpOutcome(
@@ -812,14 +857,29 @@ async function withHttpTools(
   options: { timeoutMs: number; file: string; listTools?: boolean },
   modern: boolean,
   remaining: () => number,
+  sessionId?: string,
 ): Promise<ProbeResult> {
-  if (base.status !== "ok" || options.listTools === false) return base;
-  if (server.transport.kind !== "http") return base;
+  if (base.status !== "ok" || server.transport.kind !== "http") return base;
+  // The legacy handshake sends initialized before tools/list. Discover does not.
+  // Only a session id minted by this probe adds that request; other servers stay as they were.
+  if (!modern && sessionId) {
+    await postNotification(
+      server.transport.url,
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      requestHeaders(server, LEGACY_PROTOCOL_VERSION, sessionId),
+      remaining(),
+    );
+  }
+  if (options.listTools === false) return base;
   try {
     const exchange = await postJson(
       server.transport.url,
       toolsListRequest(modern),
-      requestHeaders(server, modern ? MODERN_PROTOCOL_VERSION : LEGACY_PROTOCOL_VERSION),
+      requestHeaders(
+        server,
+        modern ? MODERN_PROTOCOL_VERSION : LEGACY_PROTOCOL_VERSION,
+        sessionId,
+      ),
       remaining(),
     );
     if (exchange.status === 401 || exchange.status === 403) {
@@ -892,7 +952,7 @@ export async function probeHttpServer(
       const discovered = await postJson(
         server.transport.url,
         discoverRequest(),
-        requestHeaders(server, MODERN_PROTOCOL_VERSION),
+        requestHeaders(server, MODERN_PROTOCOL_VERSION, exchange.sessionId),
         remaining(),
       );
       if (discovered.message?.result !== undefined) {
@@ -908,6 +968,7 @@ export async function probeHttpServer(
           options,
           true,
           remaining,
+          discovered.sessionId,
         );
       }
       if (discovered.status === 401 || discovered.status === 403) {
@@ -922,6 +983,7 @@ export async function probeHttpServer(
       options,
       false,
       remaining,
+      exchange.sessionId,
     );
   } catch (err) {
     return finding(

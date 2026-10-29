@@ -1512,3 +1512,241 @@ describe("VS Code user mcp.json and Copilot mcp-config.json", () => {
     }
   });
 });
+
+describe("Antigravity mcp_config.json", () => {
+  const secret = "antigravity-secret-do-not-print";
+
+  function writeJson(file: string, body: unknown) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(body));
+  }
+
+  it("reads the project file, skips a missing file and a file with no mcpServers key, and does not rewrite it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-antigravity-project-"));
+    const file = join(root, ".agents", "mcp_config.json");
+    try {
+      expect(__testing.PROJECT_CANDIDATES).toContain(".agents/mcp_config.json");
+      expect(discoverConfigPaths(root, { includeUserConfig: false })).toEqual([]);
+
+      const missing = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(missing)).toEqual(["NO_CONFIG"]);
+      expect(codes(missing)).not.toContain("FILE_NOT_FOUND");
+
+      const original = JSON.stringify({
+        mcpServers: {
+          local: {
+            command: "node",
+            args: ["--version"],
+            env: { TOKEN: secret },
+          },
+          remote: { serverUrl: "https://example.com/mcp" },
+          alias: { url: "https://example.com/alias" },
+          floating: { command: "npx", args: ["-y", "@scope/antigravity-server"] },
+          paused: { command: "definitely-missing-binary-xyz", disabled: true },
+        },
+      });
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, original);
+
+      const parsed = parseConfigFile(file);
+      expect(parsed.format).toBe("mcpServers");
+      expect(parsed.servers.find((server) => server.name === "local")?.transport).toEqual({
+        kind: "stdio",
+        command: "node",
+        args: ["--version"],
+      });
+      expect(parsed.servers.find((server) => server.name === "remote")?.transport).toEqual({
+        kind: "http",
+        url: "https://example.com/mcp",
+      });
+      expect(parsed.servers.find((server) => server.name === "alias")?.transport).toEqual({
+        kind: "http",
+        url: "https://example.com/alias",
+      });
+
+      const report = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(readFileSync(file, "utf8")).toBe(original);
+      expect(discoverConfigPaths(root, { includeUserConfig: false })).toEqual([file]);
+      const byName = new Map(report.servers.map((server) => [server.name, server]));
+      expect(byName.get("local")?.transport).toBe("stdio");
+      expect(byName.get("local")?.scope).toBe("project");
+      expect(byName.get("local")?.findings.map((finding) => finding.code)).toEqual(["HEALTHY"]);
+      expect(byName.get("remote")?.transport).toBe("http");
+      expect(byName.get("remote")?.scope).toBe("project");
+      expect(byName.get("alias")?.transport).toBe("http");
+      expect(byName.get("floating")?.findings.map((finding) => finding.code)).toContain(
+        "UNPINNED_PACKAGE",
+      );
+      expect(byName.get("paused")?.findings.map((finding) => finding.code)).toEqual([
+        "DISABLED",
+      ]);
+      expect(codes(report)).not.toContain("NO_CONFIG");
+      expect(codes(report)).not.toContain("FILE_NOT_FOUND");
+      expect(codes(report)).not.toContain("SKIPPED_NO_MCP");
+      expectSecretsHidden(report, [secret]);
+
+      writeJson(file, { theme: "dark", selectedAuthType: secret });
+      const skipped = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(skipped)).toEqual(["SKIPPED_NO_MCP"]);
+      expect(codes(skipped)).not.toContain("NO_MCP_SECTION");
+      expect(codes(skipped)).not.toContain("UNKNOWN_FORMAT");
+      expect(codes(skipped)).not.toContain("FILE_NOT_FOUND");
+      expect(skipped.summary.fail).toBe(0);
+      expect(parseConfigFile(file).format).toBe("none");
+      expectSecretsHidden(skipped, [secret]);
+
+      writeJson(file, { mcpServers: {} });
+      const empty = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(empty)).toEqual(["EMPTY_SERVERS"]);
+      expect(codes(empty)).not.toContain("SKIPPED_NO_MCP");
+
+      writeJson(file, { mcpServers: ["not-a-map"] });
+      const invalid = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(invalid)).toContain("SCHEMA_ERROR");
+      expect(codes(invalid)).not.toContain("SKIPPED_NO_MCP");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads ~/.gemini/config/mcp_config.json unless --no-user, and ignores GEMINI_CLI_HOME", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-antigravity-user-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-antigravity-home-"));
+    const override = join(home, "gemini-home");
+    const projectFile = join(root, ".agents", "mcp_config.json");
+    const projectGemini = join(root, ".gemini", "settings.json");
+    const userFile = join(home, ".gemini", "config", "mcp_config.json");
+    const geminiUser = join(home, ".gemini", "settings.json");
+    const geminiOverride = join(override, ".gemini", "settings.json");
+    try {
+      expect(__testing.antigravityUserPath({ home, env: {} })).toBe(userFile);
+      expect(
+        __testing.antigravityUserPath({ home, env: { GEMINI_CLI_HOME: override } }),
+      ).toBe(userFile);
+      expect(
+        __testing.antigravityUserPath({ home, env: { GEMINI_CLI_HOME: "  " } }),
+      ).toBe(userFile);
+      expect(__testing.geminiUserPath({ home, env: {} })).toBe(geminiUser);
+      expect(__testing.geminiUserPath({ home, env: { GEMINI_CLI_HOME: override } })).toBe(
+        geminiOverride,
+      );
+
+      const absent = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(absent)).toEqual(["NO_CONFIG"]);
+      expect(codes(absent)).not.toContain("FILE_NOT_FOUND");
+
+      const userOriginal = JSON.stringify({
+        mcpServers: {
+          fromAntigravity: {
+            command: "node",
+            args: ["--version"],
+            env: { TOKEN: secret },
+          },
+        },
+      });
+      mkdirSync(dirname(userFile), { recursive: true });
+      writeFileSync(userFile, userOriginal);
+      writeJson(projectFile, {
+        mcpServers: {
+          fromProject: { command: "node", args: ["--version"] },
+        },
+      });
+      writeJson(projectGemini, {
+        mcpServers: {
+          fromGeminiProject: { httpUrl: "https://example.com/gemini" },
+        },
+      });
+      writeJson(geminiUser, {
+        mcpServers: {
+          fromGeminiHome: { command: "node", args: ["--version"] },
+        },
+      });
+
+      const included = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(readFileSync(userFile, "utf8")).toBe(userOriginal);
+      expect(names(included).sort()).toEqual([
+        "fromAntigravity",
+        "fromGeminiHome",
+        "fromGeminiProject",
+        "fromProject",
+      ]);
+      expect(included.files).toContain(userFile);
+      expect(included.files).toContain(projectFile);
+      expect(included.files).toContain(geminiUser);
+      expect(
+        included.servers.find((server) => server.name === "fromAntigravity")?.scope,
+      ).toBe("user");
+      expect(
+        included.servers.find((server) => server.name === "fromProject")?.scope,
+      ).toBe("project");
+      expect(
+        included.servers.find((server) => server.name === "fromGeminiProject")?.transport,
+      ).toBe("http");
+      expectSecretsHidden(included, [secret]);
+
+      const skipped = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(names(skipped).sort()).toEqual(["fromGeminiProject", "fromProject"]);
+      expect(skipped.files).not.toContain(userFile);
+      expect(skipped.files).not.toContain(geminiUser);
+      expect(codes(skipped)).not.toContain("FILE_NOT_FOUND");
+      expect(codes(skipped)).not.toContain("NO_CONFIG");
+
+      writeJson(geminiOverride, {
+        mcpServers: {
+          fromGeminiOverride: { command: "node", args: ["--version"] },
+        },
+      });
+      const relocated = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { GEMINI_CLI_HOME: override },
+      });
+      expect(names(relocated).sort()).toEqual([
+        "fromAntigravity",
+        "fromGeminiOverride",
+        "fromGeminiProject",
+        "fromProject",
+      ]);
+      expect(relocated.files).toContain(userFile);
+      expect(relocated.files).toContain(geminiOverride);
+      expect(relocated.files).not.toContain(geminiUser);
+      expect(
+        relocated.servers.find((server) => server.name === "fromAntigravity")?.scope,
+      ).toBe("user");
+      expect(
+        relocated.servers.find((server) => server.name === "fromGeminiOverride")?.scope,
+      ).toBe("user");
+
+      writeJson(userFile, { other: secret });
+      const userSkipped = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { GEMINI_CLI_HOME: override },
+      });
+      expect(names(userSkipped)).not.toContain("fromAntigravity");
+      expect(codes(userSkipped)).toContain("SKIPPED_NO_MCP");
+      expect(codes(userSkipped)).not.toContain("NO_MCP_SECTION");
+      expectSecretsHidden(userSkipped, [secret]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

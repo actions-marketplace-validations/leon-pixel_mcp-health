@@ -35,11 +35,11 @@ program
   .option("--json", "Print JSON report", false)
   .option(
     "--no-user",
-    "Skip user-level configs (Cursor, VS Code, Claude Code, Claude Desktop, Continue, Junie, Cline, Gemini CLI, Copilot, Windsurf, Devin, Zed, and Codex)",
+    "Skip user-level configs (Cursor, VS Code, Claude Code, Claude Desktop, Continue, Junie, Cline, Gemini CLI, Antigravity, Copilot, Windsurf, Devin, Zed, and Codex)",
   )
   .option(
     "--online",
-    "Query npm registry for package drift (network required)",
+    "Query npm for package drift, and PyPI for uvx (network required)",
     false,
   )
   .option(
