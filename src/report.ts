@@ -10,7 +10,8 @@ function configLevelFindings(
     if (!server.name.startsWith("(")) return [];
     return server.findings.filter((finding) => {
       if (finding.severity !== severity) return false;
-      // NO_CONFIG is the whole scan, and its message already explains the exit.
+      // NO_CONFIG is the whole scan. Leave it out of warn and configWarnings.
+      // The summary line names it when it is the only finding and the exit is 1.
       if (severity === "warn" && finding.code === "NO_CONFIG") return false;
       return true;
     });
@@ -48,8 +49,23 @@ function summaryLine(report: HealthReport): string {
         : `config-level warning (${codes})`,
     );
   }
+  const noConfig = soleNoConfigExitNote(report);
+  if (noConfig) notes.push(noConfig);
   if (notes.length === 0) return counts;
   return `${counts}  ${notes.join("  ")}`;
+}
+
+/**
+ * A scan that found nothing else. `warn` and `configWarnings` stay 0.
+ * `--allow-missing` exits 0, so this note is omitted and the summary does not claim exit 1.
+ */
+function soleNoConfigExitNote(report: HealthReport): string | undefined {
+  if (exitCode(report) !== 1) return undefined;
+  const findings = report.servers.flatMap((server) => server.findings);
+  if (findings.length === 0 || findings.some((finding) => finding.code !== "NO_CONFIG")) {
+    return undefined;
+  }
+  return "exit 1 because of a config-level warning (NO_CONFIG)";
 }
 
 export function formatHuman(report: HealthReport): string {

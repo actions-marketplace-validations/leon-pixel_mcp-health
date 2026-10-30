@@ -1005,9 +1005,14 @@ describe("audit fixes", () => {
       expect(exitCode(warned)).toBe(1);
       expect(warned.summary.servers).toBe(0);
       expect(warned.summary.configWarnings).toBe(0);
+      expect(warned.summary.warn).toBe(0);
       const warnedHeader = formatHuman(warned).split("\n")[1] ?? "";
       expect(warnedHeader).toContain("warn: 0");
-      expect(warnedHeader).not.toContain("config-level warning");
+      expect(warnedHeader).toContain("servers: 0");
+      expect(warnedHeader).toContain(
+        "exit 1 because of a config-level warning (NO_CONFIG)",
+      );
+      expect(warned.servers[0]?.findings[0]?.message).toContain("mcp-health init");
 
       const allowed = await runCheck({
         root: dir,
@@ -1017,6 +1022,12 @@ describe("audit fixes", () => {
       expect(allowed.servers[0]?.status).toBe("ok");
       expect(allowed.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
       expect(exitCode(allowed)).toBe(0);
+      expect(allowed.summary.servers).toBe(0);
+      expect(allowed.summary.warn).toBe(0);
+      expect(allowed.summary.configWarnings).toBe(0);
+      const allowedHeader = formatHuman(allowed).split("\n")[1] ?? "";
+      expect(allowedHeader).toContain("warn: 0");
+      expect(allowedHeader).not.toContain("exit 1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
