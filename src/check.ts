@@ -245,7 +245,7 @@ function configuredUrlField(server: ParsedServer): string {
   return "url";
 }
 
-/** Cursor `disabled: true`, or Codex/Zed `enabled: false`. */
+/** Cursor and Kiro `disabled: true`, or Codex, Zed, and OpenCode `enabled: false`. */
 export function isServerDisabled(server: ParsedServer): boolean {
   return server.raw.disabled === true || server.raw.enabled === false;
 }
@@ -1150,6 +1150,7 @@ function readsEnvFile(file: string, format: ConfigFile["format"]): boolean {
   if (normalized !== "mcp.json" && !normalized.endsWith("/mcp.json")) return false;
   const ignored = new Set([
     ".junie",
+    ".kiro",
     ".continue",
     ".github",
     ".vscode",

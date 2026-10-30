@@ -124,6 +124,8 @@ describe("--no-user help", () => {
       "Cline",
       "Gemini CLI",
       "Antigravity",
+      "Kiro",
+      "OpenCode",
       "Copilot",
       "Windsurf",
       "Devin",

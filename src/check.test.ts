@@ -280,6 +280,9 @@ describe("discoverConfigPaths", () => {
     expect(__testing.PROJECT_CANDIDATES).toContain(".windsurf/mcp_config.json");
     expect(__testing.PROJECT_CANDIDATES).toContain(".zed/settings.json");
     expect(__testing.PROJECT_CANDIDATES).toContain(".codex/config.toml");
+    expect(__testing.PROJECT_CANDIDATES).toContain(".kiro/settings/mcp.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain("opencode.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain("opencode.jsonc");
     expect(__testing.claudeDesktopPaths().length).toBeGreaterThan(0);
   });
 
@@ -419,6 +422,29 @@ describe("parseConfigFile", () => {
       name: "remote",
       transport: { kind: "http", url: "https://example.com/mcp" },
     });
+
+    const kiro = parseConfigFile(
+      join(fixtures, "kiro", ".kiro", "settings", "mcp.json"),
+    );
+    expect(kiro.format).toBe("mcpServers");
+    expect(kiro.servers.map((server) => server.name).sort()).toEqual([
+      "kiro-local",
+      "kiro-paused",
+      "kiro-remote",
+    ]);
+
+    const opencode = parseConfigFile(join(fixtures, "opencode", "opencode.jsonc"));
+    expect(opencode.format).toBe("opencode");
+    expect(opencode.servers.map((server) => server.name).sort()).toEqual([
+      "local",
+      "paused",
+      "remote",
+    ]);
+    expect(opencode.servers.find((server) => server.name === "local")?.transport).toEqual({
+      kind: "stdio",
+      command: "node",
+      args: ["--version"],
+    });
   });
 
   it("keeps HTTP headers on the parsed server", () => {
@@ -512,8 +538,8 @@ describe("runCheck", () => {
     expect(report.servers.every((server) => server.status === "ok")).toBe(true);
   });
 
-  it("scans Windsurf, Zed, and Codex project configs", async () => {
-    for (const name of ["windsurf", "zed", "codex"] as const) {
+  it("scans Windsurf, Zed, Codex, Kiro, and OpenCode project configs", async () => {
+    for (const name of ["windsurf", "zed", "codex", "kiro", "opencode"] as const) {
       const root = join(fixtures, name);
       const found = discoverConfigPaths(root, { includeUserConfig: false });
       expect(found.every((p) => p.startsWith(root))).toBe(true);

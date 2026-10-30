@@ -21,6 +21,8 @@ jobs:
       - run: node dist/cli.js check --no-user fixtures/windsurf
       - run: node dist/cli.js check --no-user fixtures/zed
       - run: node dist/cli.js check --no-user fixtures/codex
+      - run: node dist/cli.js check --no-user fixtures/kiro
+      - run: node dist/cli.js check --no-user fixtures/opencode
       - run: node dist/cli.js check --no-user --probe --probe-timeout 5000 fixtures/probe-ok
       - name: Expect failures on issues fixture
         run: |

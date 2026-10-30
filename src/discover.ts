@@ -13,6 +13,9 @@ const PROJECT_CANDIDATES = [
   ".claude/settings.local.json",
   ".gemini/settings.json",
   ".agents/mcp_config.json",
+  ".kiro/settings/mcp.json",
+  "opencode.json",
+  "opencode.jsonc",
   ".junie/mcp/mcp.json",
   ".continue/config.yaml",
   ".windsurf/mcp_config.json",
@@ -122,6 +125,35 @@ function geminiUserPath(options: LocateOptions = {}): string {
 function antigravityUserPath(options: LocateOptions = {}): string {
   const { home } = locate(options);
   return join(home, ".gemini", "config", "mcp_config.json");
+}
+
+/**
+ * Kiro user MCP config.
+ * The file is `~/.kiro/settings/mcp.json` on macOS, Linux, and Windows.
+ * It is not under `%APPDATA%`. `KIRO_HOME` and agent JSON are not scanned.
+ */
+function kiroUserPath(options: LocateOptions = {}): string {
+  const { home } = locate(options);
+  return join(home, ".kiro", "settings", "mcp.json");
+}
+
+/**
+ * OpenCode user config.
+ * OpenCode reads `opencode.json` and `opencode.jsonc` from
+ * `$XDG_CONFIG_HOME/opencode` (default `~/.config/opencode`) on macOS, Linux,
+ * and Windows. It does not use `%APPDATA%`. A non-empty `OPENCODE_CONFIG`
+ * replaces those files. A blank value keeps the defaults.
+ * Project `opencode.json` is a different file.
+ */
+function opencodeUserPaths(options: LocateOptions = {}): string[] {
+  const { home, env } = locate(options);
+  const explicit = env.OPENCODE_CONFIG?.trim();
+  if (explicit) return [explicit];
+  const xdg = env.XDG_CONFIG_HOME?.trim() || join(home, ".config");
+  return [
+    join(xdg, "opencode", "opencode.json"),
+    join(xdg, "opencode", "opencode.jsonc"),
+  ];
 }
 
 /**
@@ -293,6 +325,8 @@ function userLevelPaths(options: LocateOptions = {}): string[] {
     ...claudeDesktopPaths(options),
     geminiUserPath(options),
     antigravityUserPath(options),
+    kiroUserPath(options),
+    ...opencodeUserPaths(options),
     ...windsurfUserPaths(options),
     ...zedUserPaths(options),
     codexUserPath(options),
@@ -332,6 +366,8 @@ export const __testing = {
   clineUserPath,
   geminiUserPath,
   antigravityUserPath,
+  kiroUserPath,
+  opencodeUserPaths,
   vscodeUserMcpPath,
   copilotUserPath,
   codexUserPath,
