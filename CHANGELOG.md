@@ -9,8 +9,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- `mcp-health init` prints a starter project config and the path it belongs in (#104). The default client is Cursor `.cursor/mcp.json`, with one pinned stdio package and one remote `url`. `vscode` prints `servers` for `.vscode/mcp.json`. `antigravity` prints `.agents/mcp_config.json` with `serverUrl`. `--client` selects the same clients. The command does not create or modify a file unless `--write` is set. `--write` creates the file only when that path does not exist, then prints the path. An existing file is left unchanged and the command exits non-zero. The example has no secret values. `init` does not scan and does not use the network.
 - Warn and fail findings for `COMMAND_NOT_FOUND`, `UNPINNED_PACKAGE`, `BAD_URL`, `BAD_URL_PROTOCOL`, `PLACEHOLDER_ENV`, `PLACEHOLDER_HEADER`, `ENV_FILE_MISSING`, `NO_TRANSPORT`, and `MISSING_TRANSPORT_TYPE` include one copy-paste fix. Human output prints that sentence under the finding. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The fix names the command, package argument, or field and does not include secret values. The config file is not rewritten. There is no `--fix` flag (#88).
 - Discover Google Antigravity project `.agents/mcp_config.json` and user `~/.gemini/config/mcp_config.json` (#96). `--no-user` skips the user file. A missing file is skipped, not `FILE_NOT_FOUND`. `mcpServers` uses the existing parser: `command` and `args` are stdio, and `serverUrl` or `url` is a remote URL. A file with no `mcpServers` key is skipped. `GEMINI_CLI_HOME` still selects Gemini CLI `.gemini/settings.json` and does not move the Antigravity file. The config file is not rewritten.
+
+### Changed
+
+- A scan whose only finding is `NO_CONFIG` still exits 1, and the summary line says `exit 1 because of a config-level warning (NO_CONFIG)` (#103). `--allow-missing` still exits 0, and that summary does not claim exit 1. Server counts stay 0. `warn` and `configWarnings` stay 0. The finding still names `.cursor/mcp.json`, `.vscode/mcp.json`, and `--allow-missing`, and it points at `mcp-health init`. JSON still includes the finding. No config file is rewritten.
 
 ### Fixed
 
