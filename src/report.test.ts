@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runCheck } from "./run.js";
 import { exitCode, formatHuman, formatJson } from "./report.js";
 
@@ -18,6 +18,7 @@ const SUMMARY_KEYS = [
 describe("zero-config check", () => {
   it("names a project file and --allow-missing, and still exits 1", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mcp-health-noconfig-"));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     try {
       const warned = await runCheck({ root: dir, includeUserConfig: false });
       const message = warned.servers[0]?.findings[0]?.message ?? "";
@@ -42,6 +43,16 @@ describe("zero-config check", () => {
         configWarnings: 0,
       });
       expect(Object.keys(warned.summary).sort()).toEqual(SUMMARY_KEYS);
+      expect(formatHuman(warned).split("\n")[1]).toBe(
+        "files: 0  servers: 0  ok: 0  warn: 0  fail: 0  skipped: 0  exit 1 because of a config-level warning (NO_CONFIG)",
+      );
+      const warnedJson = JSON.parse(formatJson(warned)) as {
+        servers: Array<{ findings: Array<{ code: string; message: string }> }>;
+      };
+      expect(warnedJson.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
+      expect(warnedJson.servers[0]?.findings[0]?.message).toContain("mcp-health init");
+      expect(readdirSync(dir)).toEqual([]);
+      expect(fetchSpy).not.toHaveBeenCalled();
 
       const allowed = await runCheck({
         root: dir,
@@ -50,10 +61,22 @@ describe("zero-config check", () => {
       });
       expect(allowed.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
       expect(allowed.servers[0]?.findings[0]?.message).toContain("--allow-missing");
+      expect(allowed.servers[0]?.findings[0]?.message).toContain("mcp-health init");
       expect(allowed.servers[0]?.status).toBe("ok");
       expect(exitCode(allowed)).toBe(0);
       expect(allowed.summary).toEqual(warned.summary);
+      expect(allowed.summary.warn).toBe(0);
+      expect(allowed.summary.configWarnings).toBe(0);
+      expect(allowed.summary.servers).toBe(0);
+      const allowedHeader = formatHuman(allowed).split("\n")[1] ?? "";
+      expect(allowedHeader).toBe(
+        "files: 0  servers: 0  ok: 0  warn: 0  fail: 0  skipped: 0",
+      );
+      expect(allowedHeader).not.toContain("exit 1");
+      expect(readdirSync(dir)).toEqual([]);
+      expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
+      fetchSpy.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
   });

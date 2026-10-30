@@ -49,6 +49,11 @@ mcp-health check --no-user --github-annotations fixtures/issues
 mcp-health check --no-user --json fixtures/healthy
 mcp-health check --no-user -f path/to/mcp.json .
 npx @leon-pixel/mcp-health check --no-user .
+mcp-health init
+mcp-health init vscode
+mcp-health init antigravity
+mcp-health init --write
+mcp-health init vscode --write
 ```
 
 ### Exit codes
@@ -59,7 +64,9 @@ npx @leon-pixel/mcp-health check --no-user .
 | `1` | Warnings only |
 | `2` | Failures |
 
-A directory with no MCP config exits 1. The message names a project file to add, such as `.cursor/mcp.json` or `.vscode/mcp.json`, and `--allow-missing`, which exits 0 when the repository is supposed to have no MCP config. The GitHub Action passes `--allow-missing` unless `fail-on-missing` is true.
+A directory with no MCP config exits 1. The summary line says `exit 1 because of a config-level warning (NO_CONFIG)`. The finding names a project file to add, such as `.cursor/mcp.json` or `.vscode/mcp.json`, `mcp-health init` to print a starter config, and `--allow-missing`, which exits 0 when the repository is supposed to have no MCP config. With `--allow-missing` the summary does not claim exit 1, and server counts stay 0. The GitHub Action passes `--allow-missing` unless `fail-on-missing` is true.
+
+`mcp-health init` prints a starter config and the path it belongs in. The default client is Cursor (`.cursor/mcp.json`): one pinned `npx` package and one remote `url`. `mcp-health init vscode` prints `servers` for `.vscode/mcp.json`. `mcp-health init antigravity` prints `.agents/mcp_config.json` with `serverUrl`. `--client` selects the same clients. Nothing is written unless `--write` is set. `--write` creates that file only when the path is missing, then prints the path. If the file already exists, `--write` leaves the bytes unchanged and exits 1. The example has no secret values. `init` does not scan and does not use the network.
 
 Text output labels each server row `project` or `user`. JSON keeps the file path and adds `scope` (`"project"` or `"user"`). Summary counts are unchanged.
 
