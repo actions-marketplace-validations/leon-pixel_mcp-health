@@ -280,6 +280,9 @@ describe("discoverConfigPaths", () => {
     expect(__testing.PROJECT_CANDIDATES).toContain(".windsurf/mcp_config.json");
     expect(__testing.PROJECT_CANDIDATES).toContain(".zed/settings.json");
     expect(__testing.PROJECT_CANDIDATES).toContain(".codex/config.toml");
+    expect(__testing.PROJECT_CANDIDATES).toContain(".kiro/settings/mcp.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain("opencode.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain("opencode.jsonc");
     expect(__testing.claudeDesktopPaths().length).toBeGreaterThan(0);
   });
 
@@ -419,6 +422,29 @@ describe("parseConfigFile", () => {
       name: "remote",
       transport: { kind: "http", url: "https://example.com/mcp" },
     });
+
+    const kiro = parseConfigFile(
+      join(fixtures, "kiro", ".kiro", "settings", "mcp.json"),
+    );
+    expect(kiro.format).toBe("mcpServers");
+    expect(kiro.servers.map((server) => server.name).sort()).toEqual([
+      "kiro-local",
+      "kiro-paused",
+      "kiro-remote",
+    ]);
+
+    const opencode = parseConfigFile(join(fixtures, "opencode", "opencode.jsonc"));
+    expect(opencode.format).toBe("opencode");
+    expect(opencode.servers.map((server) => server.name).sort()).toEqual([
+      "local",
+      "paused",
+      "remote",
+    ]);
+    expect(opencode.servers.find((server) => server.name === "local")?.transport).toEqual({
+      kind: "stdio",
+      command: "node",
+      args: ["--version"],
+    });
   });
 
   it("keeps HTTP headers on the parsed server", () => {
@@ -512,8 +538,8 @@ describe("runCheck", () => {
     expect(report.servers.every((server) => server.status === "ok")).toBe(true);
   });
 
-  it("scans Windsurf, Zed, and Codex project configs", async () => {
-    for (const name of ["windsurf", "zed", "codex"] as const) {
+  it("scans Windsurf, Zed, Codex, Kiro, and OpenCode project configs", async () => {
+    for (const name of ["windsurf", "zed", "codex", "kiro", "opencode"] as const) {
       const root = join(fixtures, name);
       const found = discoverConfigPaths(root, { includeUserConfig: false });
       expect(found.every((p) => p.startsWith(root))).toBe(true);
@@ -979,9 +1005,14 @@ describe("audit fixes", () => {
       expect(exitCode(warned)).toBe(1);
       expect(warned.summary.servers).toBe(0);
       expect(warned.summary.configWarnings).toBe(0);
+      expect(warned.summary.warn).toBe(0);
       const warnedHeader = formatHuman(warned).split("\n")[1] ?? "";
       expect(warnedHeader).toContain("warn: 0");
-      expect(warnedHeader).not.toContain("config-level warning");
+      expect(warnedHeader).toContain("servers: 0");
+      expect(warnedHeader).toContain(
+        "exit 1 because of a config-level warning (NO_CONFIG)",
+      );
+      expect(warned.servers[0]?.findings[0]?.message).toContain("mcp-health init");
 
       const allowed = await runCheck({
         root: dir,
@@ -991,6 +1022,12 @@ describe("audit fixes", () => {
       expect(allowed.servers[0]?.status).toBe("ok");
       expect(allowed.servers[0]?.findings[0]?.code).toBe("NO_CONFIG");
       expect(exitCode(allowed)).toBe(0);
+      expect(allowed.summary.servers).toBe(0);
+      expect(allowed.summary.warn).toBe(0);
+      expect(allowed.summary.configWarnings).toBe(0);
+      const allowedHeader = formatHuman(allowed).split("\n")[1] ?? "";
+      expect(allowedHeader).toContain("warn: 0");
+      expect(allowedHeader).not.toContain("exit 1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

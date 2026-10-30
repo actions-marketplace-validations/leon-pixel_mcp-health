@@ -2,6 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
+import { formatStarter, resolveStarterClient, starterConfig, writeStarter } from "./init.js";
 import { runCheck } from "./run.js";
 import { exitCode, formatHuman, formatJson } from "./report.js";
 import { buildSarif, formatAnnotations } from "./sarif.js";
@@ -35,7 +36,7 @@ program
   .option("--json", "Print JSON report", false)
   .option(
     "--no-user",
-    "Skip user-level configs (Cursor, VS Code, Claude Code, Claude Desktop, Continue, Junie, Cline, Gemini CLI, Antigravity, Copilot, Windsurf, Devin, Zed, and Codex)",
+    "Skip user-level configs (Cursor, VS Code, Claude Code, Claude Desktop, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Copilot, Windsurf, Devin, Zed, and Codex)",
   )
   .option(
     "--online",
@@ -122,5 +123,44 @@ program
 function collect(value: string, previous: string[]): string[] {
   return previous.concat([value]);
 }
+
+program
+  .command("init")
+  .description(
+    "Print a starter project MCP config and the path it belongs in. Does not create or modify a file unless --write is set",
+  )
+  .argument(
+    "[client]",
+    "Client to print: cursor (default, .cursor/mcp.json), vscode (.vscode/mcp.json, servers), or antigravity (.agents/mcp_config.json, serverUrl)",
+  )
+  .option(
+    "--client <name>",
+    "Same as the client argument: cursor, vscode, or antigravity",
+  )
+  .option(
+    "--write",
+    "Create the file only when that path does not exist, then print the path. An existing file is left unchanged and the command exits 1",
+    false,
+  )
+  .action((client: string | undefined, opts: { client?: string; write?: boolean }) => {
+    const resolved = resolveStarterClient(client, opts.client);
+    if (!resolved.ok) {
+      process.stderr.write(`mcp-health: ${resolved.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const starter = starterConfig(resolved.client);
+    if (!opts.write) {
+      process.stdout.write(formatStarter(starter));
+      return;
+    }
+    const written = writeStarter(process.cwd(), starter);
+    if (!written.ok) {
+      process.stderr.write(`mcp-health: ${written.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(`${starter.path}\n`);
+  });
 
 await program.parseAsync(process.argv);

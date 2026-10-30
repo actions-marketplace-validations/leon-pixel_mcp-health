@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { posix, win32 } from "node:path";
+import { posix, resolve, win32 } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -60,6 +60,8 @@ export type ParseOptions = {
   /** Scan root. Claude Code uses it to select `projects[<path>]`. */
   root?: string;
   platform?: NodeJS.Platform;
+  /** Used to recognize a custom `OPENCODE_CONFIG` file. */
+  env?: NodeJS.ProcessEnv;
 };
 
 function httpUrl(entry: ServerEntry): string | undefined {
@@ -113,7 +115,8 @@ export function configHasServers(format: ConfigFile["format"]): boolean {
     format === "mcpServers" ||
     format === "servers" ||
     format === "contextServers" ||
-    format === "codex"
+    format === "codex" ||
+    format === "opencode"
   );
 }
 
@@ -624,7 +627,161 @@ export function parseConfigFile(path: string, options: ParseOptions = {}): Confi
   if (isContinueConfig(path)) return parseContinueFile(path, text);
   if (isClaudeUserConfig(path)) return parseClaudeUserFile(path, text, options);
   if (isCopilotProjectConfig(path)) return parseCopilotProjectFile(path, text);
+  if (isOpenCodeConfigFile(path, options)) return parseOpenCodeFile(path, text);
   return parseJsonDocument(path, text);
+}
+
+function fileName(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized.split("/").pop() ?? normalized;
+}
+
+function sameConfigPath(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform,
+): boolean {
+  let a = resolve(left);
+  let b = resolve(right);
+  if (platform === "win32") {
+    a = a.toLowerCase();
+    b = b.toLowerCase();
+  }
+  return a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
+}
+
+/**
+ * OpenCode `opencode.json` / `opencode.jsonc`, including a file selected by
+ * `OPENCODE_CONFIG`. The basename check covers project and default user files.
+ */
+function isOpenCodeConfigFile(path: string, options: ParseOptions = {}): boolean {
+  const platform = options.platform ?? process.platform;
+  let name = fileName(path);
+  if (platform === "win32") name = name.toLowerCase();
+  if (name === "opencode.json" || name === "opencode.jsonc") return true;
+  const explicit = (options.env ?? process.env).OPENCODE_CONFIG?.trim();
+  if (!explicit) return false;
+  return sameConfigPath(path, explicit, platform);
+}
+
+/**
+ * OpenCode stores servers under `mcp`, not `mcpServers`.
+ * `type: "local"` command is `[program, ...args]`. Env is `environment`.
+ * `type: "remote"` uses `url`. An entry that is only `{ "enabled": true }`
+ * opts into a remote default this scan does not load, so it is not a server.
+ * `{ "enabled": false }` with no command or URL is disabled and not checked.
+ * `tools`, `agent`, `plugin`, and `$schema` are not servers.
+ */
+function parseOpenCodeFile(path: string, text: string): ConfigFile {
+  const json = readJson(path, text);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = json as Record<string, unknown>;
+  if (!("mcp" in obj)) {
+    return { path, format: "none", servers: [] };
+  }
+  const mcp = obj.mcp;
+  if (!mcp || typeof mcp !== "object" || Array.isArray(mcp)) {
+    return invalidConfig(path, "mcp must be an object of servers");
+  }
+
+  const record: Record<string, ServerEntry> = {};
+  for (const [name, value] of Object.entries(mcp)) {
+    const parsed = parseOpenCodeEntry(name, value);
+    if (parsed.kind === "error") return invalidConfig(path, parsed.error);
+    if (parsed.kind === "skip") continue;
+    record[name] = parsed.entry;
+  }
+  return { path, format: "opencode", servers: mapServers(record) };
+}
+
+function parseOpenCodeEntry(
+  name: string,
+  value: unknown,
+):
+  | { kind: "server"; entry: ServerEntry }
+  | { kind: "skip" }
+  | { kind: "error"; error: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { kind: "error", error: `mcp.${name} must be an object` };
+  }
+  const raw = value as Record<string, unknown>;
+  if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") {
+    return { kind: "error", error: `mcp.${name}.enabled must be a boolean` };
+  }
+  const enabled = typeof raw.enabled === "boolean" ? raw.enabled : undefined;
+  const type = raw.type;
+
+  if (type === undefined) {
+    if (raw.command === undefined && raw.url === undefined) {
+      if (enabled === false) return { kind: "server", entry: { enabled: false } };
+      if (enabled === true) return { kind: "skip" };
+    }
+    return {
+      kind: "error",
+      error: `mcp.${name}.type must be "local" or "remote"`,
+    };
+  }
+  if (type !== "local" && type !== "remote") {
+    return {
+      kind: "error",
+      error: `mcp.${name}.type must be "local" or "remote"`,
+    };
+  }
+
+  const environment =
+    raw.environment === undefined ? undefined : asStringRecord(raw.environment);
+  if (raw.environment !== undefined && !environment) {
+    return {
+      kind: "error",
+      error: `mcp.${name}.environment values must be strings`,
+    };
+  }
+  const headers = raw.headers === undefined ? undefined : asStringRecord(raw.headers);
+  if (raw.headers !== undefined && !headers) {
+    return {
+      kind: "error",
+      error: `mcp.${name}.headers values must be strings`,
+    };
+  }
+
+  if (type === "local") {
+    const command = asStringArray(raw.command);
+    if (!command || command.length === 0 || !command[0]?.trim()) {
+      return {
+        kind: "error",
+        error: `mcp.${name}.command must be a non-empty array of strings`,
+      };
+    }
+    return {
+      kind: "server",
+      entry: {
+        type: "local",
+        command: command[0].trim(),
+        args: command.slice(1),
+        env: environment,
+        headers,
+        enabled,
+        cwd: typeof raw.cwd === "string" ? raw.cwd : undefined,
+      },
+    };
+  }
+
+  if (raw.url !== undefined && typeof raw.url !== "string") {
+    return { kind: "error", error: `mcp.${name}.url must be a string` };
+  }
+  const url = typeof raw.url === "string" ? raw.url.trim() : "";
+  return {
+    kind: "server",
+    entry: {
+      type: "remote",
+      url: url || undefined,
+      env: environment,
+      headers,
+      enabled,
+    },
+  };
 }
 
 /**
@@ -642,8 +799,23 @@ function isAntigravityMcpConfig(path: string): boolean {
   );
 }
 
+/**
+ * Kiro workspace and user `mcp.json`. A file with no `mcpServers` key is normal.
+ * Other `mcp.json` files do not match.
+ */
+function isKiroMcpConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    normalized === ".kiro/settings/mcp.json" ||
+    normalized.endsWith("/.kiro/settings/mcp.json")
+  );
+}
+
 /** Settings-style files may exist without an MCP section — don't hard-fail. */
-export function isOptionalMcpFile(path: string): boolean {
+export function isOptionalMcpFile(
+  path: string,
+  options: ParseOptions = {},
+): boolean {
   const normalized = path.replace(/\\/g, "/");
   return (
     normalized.endsWith("/settings.json") ||
@@ -651,6 +823,8 @@ export function isOptionalMcpFile(path: string): boolean {
     normalized.endsWith("/claude_desktop_config.json") ||
     normalized.endsWith(".codex/config.toml") ||
     isAntigravityMcpConfig(path) ||
+    isKiroMcpConfig(path) ||
+    isOpenCodeConfigFile(path, options) ||
     isClaudeUserConfig(path) ||
     isContinueConfig(path)
   );

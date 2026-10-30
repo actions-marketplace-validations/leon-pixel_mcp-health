@@ -49,6 +49,11 @@ mcp-health check --no-user --github-annotations fixtures/issues
 mcp-health check --no-user --json fixtures/healthy
 mcp-health check --no-user -f path/to/mcp.json .
 npx @leon-pixel/mcp-health check --no-user .
+mcp-health init
+mcp-health init vscode
+mcp-health init antigravity
+mcp-health init --write
+mcp-health init vscode --write
 ```
 
 ### Exit codes
@@ -59,7 +64,9 @@ npx @leon-pixel/mcp-health check --no-user .
 | `1` | Warnings only |
 | `2` | Failures |
 
-A directory with no MCP config exits 1. The message names a project file to add, such as `.cursor/mcp.json` or `.vscode/mcp.json`, and `--allow-missing`, which exits 0 when the repository is supposed to have no MCP config. The GitHub Action passes `--allow-missing` unless `fail-on-missing` is true.
+A directory with no MCP config exits 1. The summary line says `exit 1 because of a config-level warning (NO_CONFIG)`. The finding names a project file to add, such as `.cursor/mcp.json` or `.vscode/mcp.json`, `mcp-health init` to print a starter config, and `--allow-missing`, which exits 0 when the repository is supposed to have no MCP config. With `--allow-missing` the summary does not claim exit 1, and server counts stay 0. The GitHub Action passes `--allow-missing` unless `fail-on-missing` is true.
+
+`mcp-health init` prints a starter config and the path it belongs in. The default client is Cursor (`.cursor/mcp.json`): one pinned `npx` package and one remote `url`. `mcp-health init vscode` prints `servers` for `.vscode/mcp.json`. `mcp-health init antigravity` prints `.agents/mcp_config.json` with `serverUrl`. `--client` selects the same clients. Nothing is written unless `--write` is set. `--write` creates that file only when the path is missing, then prints the path. If the file already exists, `--write` leaves the bytes unchanged and exits 1. The example has no secret values. `init` does not scan and does not use the network.
 
 Text output labels each server row `project` or `user`. JSON keeps the file path and adds `scope` (`"project"` or `"user"`). Summary counts are unchanged.
 
@@ -187,13 +194,15 @@ repos:
 | Claude Code | `.claude/settings.json`, `.claude/settings.local.json` | Permissions and hooks, not servers. An `mcpServers` key is a failure, `MCP_SERVERS_IGNORED`. Project servers belong in `.mcp.json`. A settings file with no `mcpServers` key is skipped |
 | Gemini CLI | `.gemini/settings.json` | `mcpServers`. `httpUrl` is streamable HTTP and wins over `url` and `command`. `$NAME` in an env value is an environment reference. `cwd` is the stdio working directory, relative to the project. A file with no `mcpServers` key is skipped |
 | Antigravity | `.agents/mcp_config.json` | `mcpServers`. `command` and `args` are stdio. `serverUrl` or `url` is a remote URL. A file with no `mcpServers` key is skipped |
+| Kiro | `.kiro/settings/mcp.json` | `mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `disabled: true` is not checked. A file with no `mcpServers` key is skipped |
+| OpenCode | `opencode.json`, `opencode.jsonc` | `mcp` map. `type: "local"` uses `command[0]` as the program and the rest as args. `environment` is checked like `env`. `type: "remote"` uses `url`. `enabled: false` is not checked. Comments in `opencode.jsonc` are allowed. `tools`, `agent`, `plugin`, and `$schema` are not servers. A file with no `mcp` key is skipped |
 | Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |
 | Junie | `.junie/mcp/mcp.json` | `mcpServers` |
 | Windsurf | `.windsurf/mcp_config.json` | `mcpServers`. Remote URLs may be `serverUrl` or `url` |
 | Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }`. `"source": "extension"` is an extension server. Comments and trailing commas are allowed |
 | Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `cwd`, `url`, `env`, `http_headers`, `bearer_token_env_var`, `env_http_headers`, `enabled` |
 
-A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, an Antigravity `mcp_config.json` with no `mcpServers` key, or another settings file with no MCP section is skipped. It is not a failed scan. A Claude Code settings file that does contain `mcpServers` is `MCP_SERVERS_IGNORED`, because Claude Code does not load servers from that file.
+A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, an Antigravity `mcp_config.json` with no `mcpServers` key, a Kiro `mcp.json` with no `mcpServers` key, an OpenCode config with no `mcp` key, or another settings file with no MCP section is skipped. It is not a failed scan. A Claude Code settings file that does contain `mcpServers` is `MCP_SERVERS_IGNORED`, because Claude Code does not load servers from that file.
 
 **User-level** (disable with `--no-user`):
 
@@ -203,6 +212,8 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - Claude Code `~/.claude/settings.json` is permissions and hooks, not a server list. An `mcpServers` key is `MCP_SERVERS_IGNORED`. User and per-project servers are in `~/.claude.json`
 - Gemini CLI `~/.gemini/settings.json`. When `GEMINI_CLI_HOME` is set, the file is `$GEMINI_CLI_HOME/.gemini/settings.json`. Shape `mcpServers`, including `httpUrl` and `cwd` (relative to the project). A file with no `mcpServers` key is skipped. System settings are not scanned
 - Antigravity `~/.gemini/config/mcp_config.json`. This is not Gemini CLI's `settings.json`, and `GEMINI_CLI_HOME` does not select it. Shape `mcpServers`. `command` and `args` are stdio. `serverUrl` or `url` is a remote URL. A file with no `mcpServers` key is skipped
+- Kiro `~/.kiro/settings/mcp.json` on macOS, Linux, and Windows (`%USERPROFILE%\.kiro\settings\mcp.json`, not `%APPDATA%`). Shape `mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `disabled: true` is not checked. A file with no `mcpServers` key is skipped. Kiro merges this file with the workspace file and lets the workspace entry win; mcp-health reports both rows. Agent JSON and `KIRO_HOME` are not scanned
+- OpenCode `$XDG_CONFIG_HOME/opencode/opencode.json` and `opencode.jsonc` (default `~/.config/opencode/` on macOS, Linux, and Windows, not `%APPDATA%`). A non-empty `OPENCODE_CONFIG` replaces those files. Shape `mcp`. `type: "local"` uses `command[0]` as the program and the rest as args. `environment` is checked like `env`. `type: "remote"` uses `url`. `enabled: false` is not checked. Comments in `opencode.jsonc` are allowed. A file with no `mcp` key is skipped. Remote `.well-known` config and `OPENCODE_CONFIG_CONTENT` are not scanned
 - Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. A key matches when it is the same directory as the scan root, including a symlink and macOS `/tmp` versus `/private/tmp`. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
 - Continue `~/.continue/config.yaml` (`mcpServers` list)
 - Junie `~/.junie/mcp/mcp.json`
@@ -222,7 +233,7 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - In a VS Code `servers` config, an `env` value may be a string, a number, or null. A number is checked as its decimal string. Null omits the variable and is not `PLACEHOLDER_ENV`. A boolean or object is still `SCHEMA_ERROR`. Other clients still require string env values
 - Cursor stdio (`.cursor/mcp.json` and project `mcp.json`) and VS Code stdio `envFile` warn `ENV_FILE_MISSING` when the expanded path is not a file. The finding is a warning. The file is not read. A value that still contains `${…}` is not also `ENV_FILE_MISSING`. HTTP servers, `.mcp.json`, and `.github/mcp.json` do not use `envFile`
 - Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, `${CLAUDE_PROJECT_DIR}`, a set `${env:NAME}`, and Claude `${VAR}` / `${VAR:-default}` are expanded. `${input:…}`, an unset `${env:NAME}`, and an unset `${VAR}` with no default are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. A URL that still contains `${…}` is not also `BAD_URL`. `--strict-variables` fails on the warnings too. Values are never printed
-- `disabled: true` (Cursor) and `enabled: false` (Codex, Zed) are reported as disabled and are not checked
+- `disabled: true` (Cursor, Kiro) and `enabled: false` (Codex, Zed, OpenCode) are reported as disabled and are not checked
 - Zed `"source": "extension"` is an extension-provided server. It is not a missing command
 - `--online`: for `npx`, `npm exec`, `bunx`, `pnpm`, and `yarn`, npm latest vs the pinned version or semver range. For `uvx`, the same check reads PyPI project JSON (`info.version`) for the distribution name. `pkg==1.2.3`, `pkg>=1`, and extras such as `pkg[extra]==1.2.3` use that name, not the specifier. `NPM_CURRENT` when the pin includes latest, `NPM_DRIFT` when it does not, and `NPM_LATEST` when the package is unpinned. Those messages name npm or PyPI. A registry miss or a network failure is a warning, `NPM_LOOKUP_FAILED`, and the message names that registry. An offline scan does not call either registry
 - `--probe`: MCP handshake (stdio spawn, or HTTP POST). Stdio is spawned in the scan root, or in `cwd` when that client uses it. Stdio matches the JSON-RPC id and skips logs and notifications. HTTP sends the config headers, plus Codex `bearer_token_env_var` and `env_http_headers` when those variables are set. When initialize returns `Mcp-Session-Id`, the probe sends that header on the later requests in that probe (the initialized notification and `tools/list`). A successful `server/discover` fallback uses the session id from that response on `tools/list` instead. A server that does not mint a session id is unchanged. The session id is not printed. The HTTP probe speaks `http:` and `https:` only. `ws:`, `wss:`, `unix:`, and `pipe:` are `PROBE_SKIPPED`. A 401 with an OAuth `WWW-Authenticate` challenge is a warning (`PROBE_OAUTH`); the editor signs in and this probe does not. Env values are never printed
@@ -238,7 +249,7 @@ The initialize request uses protocol revision `2025-11-25`. If the server reject
 
 mcp-health reads the MCP config files already in a repo (and, unless you pass `--no-user`, the user-level files above) and reports whether those entries will load: missing commands, bad URLs, unpinned packages, optional registry drift, and an optional handshake that includes `tools/list`. The GitHub Action is the CI form of that scan, with annotations and SARIF.
 
-[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Antigravity, Copilot, Windsurf, Zed, or Codex config files.
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Copilot, Windsurf, Zed, or Codex config files.
 
 [MCP Doctor](https://mcpdoctor.ai/) (`npx mcpdoctor test …`) grades one server command against the MCP spec. [mcp-healthcheck](https://github.com/SiluPanda/mcp-healthcheck) is a liveness probe for one server URL or stdio command, including Kubernetes-style checks. mcp-health does not call tools, score spec compliance, or watch a running server. It checks the configs an agent will load.
 

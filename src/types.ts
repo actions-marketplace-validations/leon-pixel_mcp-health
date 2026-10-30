@@ -18,6 +18,7 @@ export type ConfigFile = {
     | "servers"
     | "contextServers"
     | "codex"
+    | "opencode"
     | "none"
     | "unknown"
     | "invalid";

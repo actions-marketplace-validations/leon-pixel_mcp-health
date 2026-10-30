@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "kiro-local": {
+      "command": "node",
+      "args": ["--version"]
+    },
+    "kiro-remote": {
+      "url": "https://example.com/mcp"
+    },
+    "kiro-paused": {
+      "command": "definitely-missing-binary-xyz",
+      "disabled": true
+    }
+  }
+}
