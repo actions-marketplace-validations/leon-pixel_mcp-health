@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { ConfigScope } from "./types.js";
 
 const PROJECT_CANDIDATES = [
@@ -14,6 +14,10 @@ const PROJECT_CANDIDATES = [
   ".gemini/settings.json",
   ".agents/mcp_config.json",
   ".kiro/settings/mcp.json",
+  ".amazonq/mcp.json",
+  ".amazonq/default.json",
+  ".amp/settings.json",
+  ".amp/settings.jsonc",
   "opencode.json",
   "opencode.jsonc",
   ".junie/mcp/mcp.json",
@@ -135,6 +139,51 @@ function antigravityUserPath(options: LocateOptions = {}): string {
 function kiroUserPath(options: LocateOptions = {}): string {
   const { home } = locate(options);
   return join(home, ".kiro", "settings", "mcp.json");
+}
+
+/**
+ * Amazon Q Developer user MCP config.
+ * Global scope is `~/.aws/amazonq/mcp.json` and `~/.aws/amazonq/default.json`
+ * on macOS, Linux, and Windows (`%USERPROFILE%\.aws\amazonq\`, not `%APPDATA%`).
+ * `default.json` is the GUI agent file. A copy with no `mcpServers` key is skipped.
+ */
+function amazonQUserPaths(options: LocateOptions = {}): string[] {
+  const { home } = locate(options);
+  const dir = join(home, ".aws", "amazonq");
+  return [join(dir, "mcp.json"), join(dir, "default.json")];
+}
+
+/**
+ * Amp user settings.
+ * The files are `~/.config/amp/settings.json` and `settings.jsonc` on macOS,
+ * Linux, and Windows (`%USERPROFILE%\.config\amp\`, not `%APPDATA%`).
+ * `XDG_CONFIG_HOME` selects Amp plugins, not these settings files.
+ * Project `.amp/settings.json` is a different file.
+ */
+function ampUserPaths(options: LocateOptions = {}): string[] {
+  const { home } = locate(options);
+  const dir = join(home, ".config", "amp");
+  return [join(dir, "settings.json"), join(dir, "settings.jsonc")];
+}
+
+/**
+ * Goose user config.
+ * macOS and Linux: `$XDG_CONFIG_HOME/goose/config.yaml` when that variable is
+ * an absolute path, otherwise `~/.config/goose/config.yaml`. A relative
+ * `XDG_CONFIG_HOME` is ignored, matching Goose. Windows reads
+ * `%APPDATA%\Block\goose\config\config.yaml` and does not use `XDG_CONFIG_HOME`.
+ * There is no project config. `secrets.yaml` is not this file.
+ * An absolute `GOOSE_PATH_ROOT` is not scanned.
+ */
+function gooseUserPath(options: LocateOptions = {}): string {
+  const { platform: p, home, env } = locate(options);
+  if (p === "win32") {
+    const appData = env.APPDATA?.trim() || join(home, "AppData", "Roaming");
+    return join(appData, "Block", "goose", "config", "config.yaml");
+  }
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  const base = xdg && isAbsolute(xdg) ? xdg : join(home, ".config");
+  return join(base, "goose", "config.yaml");
 }
 
 /**
@@ -326,6 +375,9 @@ function userLevelPaths(options: LocateOptions = {}): string[] {
     geminiUserPath(options),
     antigravityUserPath(options),
     kiroUserPath(options),
+    ...amazonQUserPaths(options),
+    ...ampUserPaths(options),
+    gooseUserPath(options),
     ...opencodeUserPaths(options),
     ...windsurfUserPaths(options),
     ...zedUserPaths(options),
@@ -367,6 +419,9 @@ export const __testing = {
   geminiUserPath,
   antigravityUserPath,
   kiroUserPath,
+  amazonQUserPaths,
+  ampUserPaths,
+  gooseUserPath,
   opencodeUserPaths,
   vscodeUserMcpPath,
   copilotUserPath,
