@@ -47,6 +47,7 @@ mcp-health check --no-user --probe --no-tools fixtures/probe-ok
 mcp-health check --no-user --sarif mcp-health.sarif fixtures/issues
 mcp-health check --no-user --github-annotations fixtures/issues
 mcp-health check --no-user --json fixtures/healthy
+mcp-health check --no-user --recursive .
 mcp-health check --no-user -f path/to/mcp.json .
 npx @leon-pixel/mcp-health check --no-user .
 mcp-health init
@@ -74,6 +75,22 @@ Text output labels each server row `project` or `user`. JSON keeps the file path
 
 A warn or fail row for a missing command, an unpinned package, a bad URL, a placeholder, a missing `envFile`, a missing transport, or a Claude Code `url` with no `type` includes one fix line under the finding. Copy that line into the config you already have open. The line names the command, package argument, or field and does not include secret values. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The scan does not rewrite the file. There is no `--fix` flag.
 
+### Accepted findings
+
+A repository can record findings it has already accepted in `.mcp-health.json` at the scan root. That file is not an MCP config, and a nested copy is not read. A missing file leaves the scan unchanged.
+
+```json
+{
+  "ignore": [
+    { "code": "UNPINNED_PACKAGE", "server": "unpinned", "file": "mcp.json" }
+  ]
+}
+```
+
+`file` is relative to the scan root. `mcp.json` and `services/api/mcp.json` are different files. A match is exact on `code`, `server`, and `file`. The finding message is not compared, and a secret value is not required. The matched finding is left out of the text report, JSON, SARIF, and GitHub annotations. It does not count toward `warn` or `fail`, and it does not change the exit code. Another finding on that server still does. When nothing remains, the server is ok.
+
+An entry that names an unknown code is `UNKNOWN_IGNORE`. An entry that matches nothing is `STALE_IGNORE`. An ignore file that is not the object above is `IGNORE_CONFIG`. Those are config-level warnings, so a typo or a stale entry stays in the report and still exits 1 when nothing else is wrong. The scan does not rewrite the config or the ignore file, and it does not print secret values.
+
 ## GitHub Action
 
 ```yaml
@@ -93,7 +110,7 @@ jobs:
 
 The action is listed on the Marketplace as [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor). `uses: leon-pixel/mcp-health@v1` installs that listing.
 
-`path` is the scan root, relative to the job workspace. In a monorepo, point it at the package that holds the MCP config. Other packages are not scanned.
+`path` is the scan root, relative to the job workspace. `check` reads project configs in that directory only. A nested file such as `services/api/.cursor/mcp.json` is not included unless you pass `--recursive`, or point `path` at that package.
 
 ```yaml
 - uses: leon-pixel/mcp-health@v1
@@ -103,6 +120,15 @@ The action is listed on the Marketplace as [mcp-health-doctor](https://github.co
 ```
 
 The action always passes `--no-user`, so the job does not read the runner's user-level configs. `args` are additional flags. Setting `args` does not remove `--no-user`. The example above runs `check --no-user --probe`, plus the annotation, allow-missing, and SARIF flags the action adds itself.
+
+`--recursive` finds the same project-relative candidates under subdirectories, so one job can cover `services/api/.cursor/mcp.json` and `apps/web/.vscode/mcp.json`. Both rows are labeled `project`. The walk skips `node_modules`, `.git`, `dist`, `build`, `vendor`, `.venv`, `venv`, and `target`. It does not follow a symlink that resolves outside the scan root. A config 8 directories below the scan root is still found, and one directory deeper is not. User-level configs are still read once. `--no-user` still skips them. The exit code is the worst status in the scan. A directory that still has no config is `NO_CONFIG`. The action has no recursive input. Pass the flag through `args`, which is appended after `--no-user`:
+
+```yaml
+- uses: leon-pixel/mcp-health@v1
+  with:
+    path: .
+    args: --recursive
+```
 
 `include-user: true` drops that `--no-user` and scans the runner's Cursor, Claude, VS Code, Codex, and other user configs. A GitHub-hosted runner usually has an empty home directory. A self-hosted runner reads that machine's user. An explicit `--no-user` inside `args` still skips user configs.
 
@@ -146,7 +172,7 @@ jobs:
 
 The check step itself exits 0 so the upload can still run after findings. A following step exits with the real mcp-health code, so the job still fails on warnings and failures. The `exit-code` output is that code (`0`, `1`, or `2`).
 
-Optional `args`: `--online`, `--probe`, `--no-tools`, `--strict-variables`, `--probe-timeout 8000`, `--json`. These are added after `--no-user`.
+Optional `args`: `--online`, `--probe`, `--no-tools`, `--strict-variables`, `--probe-timeout 8000`, `--json`, `--recursive`. These are added after `--no-user`.
 
 ## Gate a commit
 
@@ -183,6 +209,8 @@ repos:
 `npx` needs Node.js 22.12 or newer on `PATH`. `pass_filenames: false` matters because the hook checks the repo, not the staged file list.
 
 ## What it scans
+
+`check` reads the project paths below from the scan root. `--recursive` reads those same paths in subdirectories, skipping `node_modules`, `.git`, `dist`, `build`, `vendor`, `.venv`, `venv`, and `target`. User-level files are still read once.
 
 **Project** (a missing file is skipped):
 

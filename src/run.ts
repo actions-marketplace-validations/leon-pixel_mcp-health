@@ -24,6 +24,7 @@ import {
   splitPackageSpec,
 } from "./npm.js";
 import { probeServer, worst } from "./probe.js";
+import { applyIgnoreFile } from "./ignore.js";
 import { configWarningFindings } from "./report.js";
 import { expandServerVariables } from "./vars.js";
 import type {
@@ -56,6 +57,8 @@ export type RunOptions = {
   strictVariables?: boolean;
   /** A scan that finds no config is ok instead of a warning. */
   allowMissing?: boolean;
+  /** Also scan project MCP configs in subdirectories of the root. */
+  recursive?: boolean;
 } & LocateOptions;
 
 function emptyReport(
@@ -102,6 +105,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
       ? options.files.map((f) => resolve(root, f))
       : discoverConfigPaths(root, {
           includeUserConfig: options.includeUserConfig,
+          recursive: options.recursive,
           platform: options.platform,
           home: options.home,
           env: options.env,
@@ -384,17 +388,19 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
     });
   }
 
-  const real = servers.filter((server) => !server.name.startsWith("("));
+  const reported = applyIgnoreFile(root, servers);
+
+  const real = reported.filter((server) => !server.name.startsWith("("));
   const summary = {
     ok: 0,
     warn: 0,
     fail: 0,
     files: files.length,
     servers: real.length,
-    skipped: servers.filter((server) =>
+    skipped: reported.filter((server) =>
       server.findings.some((finding) => finding.code === "SKIPPED_NO_MCP"),
     ).length,
-    configWarnings: configWarningFindings(servers).length,
+    configWarnings: configWarningFindings(reported).length,
   };
 
   for (const server of real) {
@@ -407,7 +413,7 @@ export async function runCheck(options: RunOptions): Promise<HealthReport> {
     scannedAt: new Date().toISOString(),
     root,
     files,
-    servers,
+    servers: reported,
     summary,
   };
 }
