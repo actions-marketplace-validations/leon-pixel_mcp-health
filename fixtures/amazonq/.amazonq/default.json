@@ -1,0 +1,5 @@
+{
+  "name": "q-developer",
+  "tools": ["fs_read"],
+  "useLegacyMcpJson": true
+}

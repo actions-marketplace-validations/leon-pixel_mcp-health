@@ -116,7 +116,8 @@ export function configHasServers(format: ConfigFile["format"]): boolean {
     format === "servers" ||
     format === "contextServers" ||
     format === "codex" ||
-    format === "opencode"
+    format === "opencode" ||
+    format === "goose"
   );
 }
 
@@ -628,6 +629,9 @@ export function parseConfigFile(path: string, options: ParseOptions = {}): Confi
   if (isClaudeUserConfig(path)) return parseClaudeUserFile(path, text, options);
   if (isCopilotProjectConfig(path)) return parseCopilotProjectFile(path, text);
   if (isOpenCodeConfigFile(path, options)) return parseOpenCodeFile(path, text);
+  if (isAmazonQConfig(path)) return parseAmazonQFile(path, text);
+  if (isAmpSettings(path)) return parseAmpFile(path, text);
+  if (isGooseConfig(path)) return parseGooseFile(path, text);
   return parseJsonDocument(path, text);
 }
 
@@ -811,6 +815,175 @@ function isKiroMcpConfig(path: string): boolean {
   );
 }
 
+/**
+ * Amazon Q Developer `.amazonq/mcp.json`, `.amazonq/default.json`, and the
+ * user copies under `~/.aws/amazonq/`. Only `mcpServers` is a server map.
+ * Other agent keys, including a `servers` key, are not MCP servers.
+ */
+function isAmazonQConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return /(?:^|\/)\.?amazonq\/(?:mcp|default)\.json$/.test(normalized);
+}
+
+/** GUI agent file. A copy with no `mcpServers` key stores non-MCP settings. */
+function isAmazonQDefaultConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return /(?:^|\/)\.?amazonq\/default\.json$/.test(normalized);
+}
+
+function parseAmazonQFile(path: string, text: string): ConfigFile {
+  const json = readJson(path, text);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = json as Record<string, unknown>;
+  if (!("mcpServers" in obj)) return { path, format: "none", servers: [] };
+  return parseMcpServersValue(path, obj.mcpServers);
+}
+
+/**
+ * Amp project `.amp/settings.json` / `.amp/settings.jsonc` and user
+ * `~/.config/amp/settings.json` / `settings.jsonc`. Servers are `amp.mcpServers`.
+ * Other `amp.*` keys are not servers.
+ */
+function isAmpSettings(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    /(?:^|\/)\.amp\/settings\.jsonc?$/.test(normalized) ||
+    /(?:^|\/)\.config\/amp\/settings\.jsonc?$/.test(normalized)
+  );
+}
+
+function parseAmpFile(path: string, text: string): ConfigFile {
+  const json = readJson(path, text);
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = json as Record<string, unknown>;
+  if (!("amp.mcpServers" in obj)) return { path, format: "none", servers: [] };
+  const parsed = parseMcpServersValue(path, obj["amp.mcpServers"]);
+  if (parsed.format === "invalid" && parsed.error) {
+    return {
+      ...parsed,
+      error: parsed.error.replaceAll("mcpServers", "amp.mcpServers"),
+    };
+  }
+  return parsed;
+}
+
+/**
+ * Goose user `config.yaml`. `extensions` is the map. `type: stdio` uses `cmd`
+ * and `args`. `type: streamable_http` uses `uri`. `builtin` and `platform`
+ * are not MCP commands. `envs` is checked like `env`. A file with no
+ * `extensions` key is skipped. This does not match a project `.goose/` path.
+ */
+function isGooseConfig(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    /(?:^|\/)goose\/config\.yaml$/.test(normalized) ||
+    /(?:^|\/)goose\/config\/config\.yaml$/.test(normalized)
+  );
+}
+
+function parseGooseFile(path: string, text: string): ConfigFile {
+  const doc = readYaml(path, text);
+  if (doc === null || doc === undefined) {
+    return { path, format: "none", servers: [] };
+  }
+  if (typeof doc !== "object" || Array.isArray(doc)) {
+    return { path, format: "unknown", servers: [] };
+  }
+  const obj = doc as Record<string, unknown>;
+  if (!("extensions" in obj)) return { path, format: "none", servers: [] };
+  const extensions = obj.extensions;
+  if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) {
+    return invalidConfig(path, "extensions must be a map of extensions");
+  }
+
+  const record: Record<string, ServerEntry> = {};
+  for (const [name, value] of Object.entries(extensions)) {
+    const parsed = parseGooseEntry(name, value);
+    if (parsed.kind === "error") return invalidConfig(path, parsed.error);
+    if (parsed.kind === "skip") continue;
+    record[name] = parsed.entry;
+  }
+  return { path, format: "goose", servers: mapServers(record) };
+}
+
+function parseGooseEntry(
+  name: string,
+  value: unknown,
+):
+  | { kind: "server"; entry: ServerEntry }
+  | { kind: "skip" }
+  | { kind: "error"; error: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { kind: "error", error: `extensions.${name} must be an object` };
+  }
+  const raw = value as Record<string, unknown>;
+  if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") {
+    return { kind: "error", error: `extensions.${name}.enabled must be a boolean` };
+  }
+  const enabled = typeof raw.enabled === "boolean" ? raw.enabled : undefined;
+  const type = raw.type;
+  if (type === "builtin" || type === "platform") return { kind: "skip" };
+  if (type !== "stdio" && type !== "streamable_http") {
+    return {
+      kind: "error",
+      error: `extensions.${name}.type must be stdio, streamable_http, builtin, or platform`,
+    };
+  }
+
+  const envs = raw.envs === undefined ? undefined : asStringRecord(raw.envs);
+  if (raw.envs !== undefined && !envs) {
+    return { kind: "error", error: `extensions.${name}.envs values must be strings` };
+  }
+  const headers = raw.headers === undefined ? undefined : asStringRecord(raw.headers);
+  if (raw.headers !== undefined && !headers) {
+    return { kind: "error", error: `extensions.${name}.headers values must be strings` };
+  }
+
+  if (type === "stdio") {
+    if (raw.cmd !== undefined && typeof raw.cmd !== "string") {
+      return { kind: "error", error: `extensions.${name}.cmd must be a string` };
+    }
+    const args = raw.args === undefined ? undefined : asStringArray(raw.args);
+    if (raw.args !== undefined && !args) {
+      return {
+        kind: "error",
+        error: `extensions.${name}.args must be an array of strings`,
+      };
+    }
+    const command = typeof raw.cmd === "string" ? raw.cmd.trim() : "";
+    return {
+      kind: "server",
+      entry: {
+        type: "stdio",
+        command: command || undefined,
+        args: args ?? [],
+        env: envs,
+        headers,
+        enabled,
+      },
+    };
+  }
+
+  if (raw.uri !== undefined && typeof raw.uri !== "string") {
+    return { kind: "error", error: `extensions.${name}.uri must be a string` };
+  }
+  const uri = typeof raw.uri === "string" ? raw.uri.trim() : "";
+  return {
+    kind: "server",
+    entry: {
+      type: "streamable_http",
+      url: uri || undefined,
+      env: envs,
+      headers,
+      enabled,
+    },
+  };
+}
+
 /** Settings-style files may exist without an MCP section — don't hard-fail. */
 export function isOptionalMcpFile(
   path: string,
@@ -824,6 +997,9 @@ export function isOptionalMcpFile(
     normalized.endsWith(".codex/config.toml") ||
     isAntigravityMcpConfig(path) ||
     isKiroMcpConfig(path) ||
+    isAmazonQDefaultConfig(path) ||
+    isAmpSettings(path) ||
+    isGooseConfig(path) ||
     isOpenCodeConfigFile(path, options) ||
     isClaudeUserConfig(path) ||
     isContinueConfig(path)

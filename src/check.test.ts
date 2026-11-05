@@ -281,6 +281,11 @@ describe("discoverConfigPaths", () => {
     expect(__testing.PROJECT_CANDIDATES).toContain(".zed/settings.json");
     expect(__testing.PROJECT_CANDIDATES).toContain(".codex/config.toml");
     expect(__testing.PROJECT_CANDIDATES).toContain(".kiro/settings/mcp.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain(".amazonq/mcp.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain(".amazonq/default.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain(".amp/settings.json");
+    expect(__testing.PROJECT_CANDIDATES).toContain(".amp/settings.jsonc");
+    expect(__testing.PROJECT_CANDIDATES).not.toContain(".goose/config.yaml");
     expect(__testing.PROJECT_CANDIDATES).toContain("opencode.json");
     expect(__testing.PROJECT_CANDIDATES).toContain("opencode.jsonc");
     expect(__testing.claudeDesktopPaths().length).toBeGreaterThan(0);
@@ -538,8 +543,8 @@ describe("runCheck", () => {
     expect(report.servers.every((server) => server.status === "ok")).toBe(true);
   });
 
-  it("scans Windsurf, Zed, Codex, Kiro, and OpenCode project configs", async () => {
-    for (const name of ["windsurf", "zed", "codex", "kiro", "opencode"] as const) {
+  it("scans Windsurf, Zed, Codex, Kiro, OpenCode, Amazon Q, and Amp project configs", async () => {
+    for (const name of ["windsurf", "zed", "codex", "kiro", "opencode", "amazonq", "amp"] as const) {
       const root = join(fixtures, name);
       const found = discoverConfigPaths(root, { includeUserConfig: false });
       expect(found.every((p) => p.startsWith(root))).toBe(true);
