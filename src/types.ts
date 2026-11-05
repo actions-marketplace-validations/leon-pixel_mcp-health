@@ -19,6 +19,7 @@ export type ConfigFile = {
     | "contextServers"
     | "codex"
     | "opencode"
+    | "goose"
     | "none"
     | "unknown"
     | "invalid";

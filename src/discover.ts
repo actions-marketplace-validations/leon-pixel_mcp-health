@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { ConfigScope } from "./types.js";
 
 const PROJECT_CANDIDATES = [
@@ -14,6 +14,10 @@ const PROJECT_CANDIDATES = [
   ".gemini/settings.json",
   ".agents/mcp_config.json",
   ".kiro/settings/mcp.json",
+  ".amazonq/mcp.json",
+  ".amazonq/default.json",
+  ".amp/settings.json",
+  ".amp/settings.jsonc",
   "opencode.json",
   "opencode.jsonc",
   ".junie/mcp/mcp.json",
@@ -24,6 +28,27 @@ const PROJECT_CANDIDATES = [
 ] as const;
 
 const CONTINUE_BLOCK = /\.(yaml|yml|json)$/i;
+
+/**
+ * Directory names the recursive walk does not enter.
+ * `node_modules` and build output are where a monorepo scan would spend its time.
+ */
+const SKIP_DIR_NAMES = [
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "vendor",
+  ".venv",
+  "venv",
+  "target",
+] as const;
+
+/**
+ * Directories below the scan root that `--recursive` still scans.
+ * A config in a directory at this depth is found. One level deeper is not.
+ */
+const MAX_RECURSIVE_DEPTH = 8;
 
 /** Package-family name of the official Claude Desktop MSIX install. */
 const CLAUDE_DESKTOP_MSIX_FAMILY = "Claude_pzs8sxrjxfjjc";
@@ -135,6 +160,51 @@ function antigravityUserPath(options: LocateOptions = {}): string {
 function kiroUserPath(options: LocateOptions = {}): string {
   const { home } = locate(options);
   return join(home, ".kiro", "settings", "mcp.json");
+}
+
+/**
+ * Amazon Q Developer user MCP config.
+ * Global scope is `~/.aws/amazonq/mcp.json` and `~/.aws/amazonq/default.json`
+ * on macOS, Linux, and Windows (`%USERPROFILE%\.aws\amazonq\`, not `%APPDATA%`).
+ * `default.json` is the GUI agent file. A copy with no `mcpServers` key is skipped.
+ */
+function amazonQUserPaths(options: LocateOptions = {}): string[] {
+  const { home } = locate(options);
+  const dir = join(home, ".aws", "amazonq");
+  return [join(dir, "mcp.json"), join(dir, "default.json")];
+}
+
+/**
+ * Amp user settings.
+ * The files are `~/.config/amp/settings.json` and `settings.jsonc` on macOS,
+ * Linux, and Windows (`%USERPROFILE%\.config\amp\`, not `%APPDATA%`).
+ * `XDG_CONFIG_HOME` selects Amp plugins, not these settings files.
+ * Project `.amp/settings.json` is a different file.
+ */
+function ampUserPaths(options: LocateOptions = {}): string[] {
+  const { home } = locate(options);
+  const dir = join(home, ".config", "amp");
+  return [join(dir, "settings.json"), join(dir, "settings.jsonc")];
+}
+
+/**
+ * Goose user config.
+ * macOS and Linux: `$XDG_CONFIG_HOME/goose/config.yaml` when that variable is
+ * an absolute path, otherwise `~/.config/goose/config.yaml`. A relative
+ * `XDG_CONFIG_HOME` is ignored, matching Goose. Windows reads
+ * `%APPDATA%\Block\goose\config\config.yaml` and does not use `XDG_CONFIG_HOME`.
+ * There is no project config. `secrets.yaml` is not this file.
+ * An absolute `GOOSE_PATH_ROOT` is not scanned.
+ */
+function gooseUserPath(options: LocateOptions = {}): string {
+  const { platform: p, home, env } = locate(options);
+  if (p === "win32") {
+    const appData = env.APPDATA?.trim() || join(home, "AppData", "Roaming");
+    return join(appData, "Block", "goose", "config", "config.yaml");
+  }
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  const base = xdg && isAbsolute(xdg) ? xdg : join(home, ".config");
+  return join(base, "goose", "config.yaml");
 }
 
 /**
@@ -326,6 +396,9 @@ function userLevelPaths(options: LocateOptions = {}): string[] {
     geminiUserPath(options),
     antigravityUserPath(options),
     kiroUserPath(options),
+    ...amazonQUserPaths(options),
+    ...ampUserPaths(options),
+    gooseUserPath(options),
     ...opencodeUserPaths(options),
     ...windsurfUserPaths(options),
     ...zedUserPaths(options),
@@ -336,28 +409,129 @@ function userLevelPaths(options: LocateOptions = {}): string[] {
   ];
 }
 
+function pathIdentity(file: string): string {
+  const normalized = resolve(file);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function skippedDirName(name: string): boolean {
+  if ((SKIP_DIR_NAMES as readonly string[]).includes(name)) return true;
+  if (process.platform !== "win32") return false;
+  const lower = name.toLowerCase();
+  return SKIP_DIR_NAMES.some((skip) => skip.toLowerCase() === lower);
+}
+
+/** True when `candidate` is `root` or a path inside it. Both are real paths. */
+function isInsideRoot(rootReal: string, candidateReal: string): boolean {
+  const rel = relative(rootReal, candidateReal);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function rememberConfig(found: Map<string, string>, full: string): void {
+  if (!existsSync(full)) return;
+  let key: string;
+  try {
+    key = pathIdentity(realpathSync(full));
+  } catch {
+    key = pathIdentity(full);
+  }
+  if (!found.has(key)) found.set(key, full);
+}
+
+function collectProjectConfigs(dir: string, found: Map<string, string>): void {
+  for (const rel of PROJECT_CANDIDATES) {
+    rememberConfig(found, join(dir, rel));
+  }
+  for (const full of continueBlockFiles(dir)) {
+    rememberConfig(found, full);
+  }
+}
+
+/**
+ * Visit subdirectories of `scanRoot` and call `visit` on each one.
+ * The scan root itself is not visited here.
+ * A symlink whose real path is outside the scan root is not entered.
+ * A symlink that points at a directory already visited is not entered again.
+ */
+function walkProjectDirs(scanRoot: string, visit: (dir: string) => void): void {
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(scanRoot);
+  } catch {
+    return;
+  }
+  const seen = new Set<string>([pathIdentity(rootReal)]);
+
+  const descend = (dir: string, depth: number): void => {
+    if (depth > MAX_RECURSIVE_DEPTH) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (skippedDirName(entry.name)) continue;
+      const full = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        let resolved: string;
+        try {
+          resolved = realpathSync(full);
+        } catch {
+          continue;
+        }
+        if (!isInsideRoot(rootReal, resolved)) continue;
+        let linked;
+        try {
+          linked = statSync(resolved);
+        } catch {
+          continue;
+        }
+        if (!linked.isDirectory()) continue;
+        const id = pathIdentity(resolved);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        visit(full);
+        descend(full, depth + 1);
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      let id = pathIdentity(full);
+      try {
+        id = pathIdentity(realpathSync(full));
+      } catch {
+        // Keep the path we have when the directory cannot be canonicalized.
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      visit(full);
+      descend(full, depth + 1);
+    }
+  };
+
+  descend(scanRoot, 1);
+}
+
 export function discoverConfigPaths(
   root: string,
-  options: { includeUserConfig?: boolean } & LocateOptions = {},
+  options: { includeUserConfig?: boolean; recursive?: boolean } & LocateOptions = {},
 ): string[] {
   const absRoot = resolve(root);
-  const found = new Set<string>();
+  const found = new Map<string, string>();
 
-  for (const rel of PROJECT_CANDIDATES) {
-    const full = join(absRoot, rel);
-    if (existsSync(full)) found.add(full);
-  }
-  for (const full of continueBlockFiles(absRoot)) {
-    found.add(full);
+  collectProjectConfigs(absRoot, found);
+  if (options.recursive) {
+    walkProjectDirs(absRoot, (dir) => collectProjectConfigs(dir, found));
   }
 
+  // User configs are read once for the whole scan, not once per subdirectory.
   if (options.includeUserConfig !== false) {
     for (const full of userLevelPaths(options)) {
-      if (existsSync(full)) found.add(full);
+      rememberConfig(found, full);
     }
   }
 
-  return [...found].sort();
+  return [...found.values()].sort();
 }
 
 export const __testing = {
@@ -367,10 +541,15 @@ export const __testing = {
   geminiUserPath,
   antigravityUserPath,
   kiroUserPath,
+  amazonQUserPaths,
+  ampUserPaths,
+  gooseUserPath,
   opencodeUserPaths,
   vscodeUserMcpPath,
   copilotUserPath,
   codexUserPath,
   userLevelPaths,
   PROJECT_CANDIDATES,
+  SKIP_DIR_NAMES,
+  MAX_RECURSIVE_DEPTH,
 };

@@ -36,7 +36,7 @@ program
   .option("--json", "Print JSON report", false)
   .option(
     "--no-user",
-    "Skip user-level configs (Cursor, VS Code, Claude Code, Claude Desktop, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Copilot, Windsurf, Devin, Zed, and Codex)",
+    "Skip user-level configs (Cursor, VS Code, Claude Code, Claude Desktop, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Amazon Q, Amp, Goose, Copilot, Windsurf, Devin, Zed, and Codex)",
   )
   .option(
     "--online",
@@ -74,6 +74,11 @@ program
     "Exit 0 when no MCP config file is found",
     false,
   )
+  .option(
+    "--recursive",
+    "Scan project MCP configs in subdirectories. Skips node_modules, .git, dist, build, vendor, .venv, venv, and target, and does not follow a symlink outside the scan root",
+    false,
+  )
   .action(
     async (
       root: string,
@@ -89,6 +94,7 @@ program
         githubAnnotations?: boolean;
         strictVariables?: boolean;
         allowMissing?: boolean;
+        recursive?: boolean;
       },
     ) => {
       const report = await runCheck({
@@ -103,6 +109,7 @@ program
         probeListTools: opts.tools !== false,
         strictVariables: Boolean(opts.strictVariables),
         allowMissing: Boolean(opts.allowMissing),
+        recursive: Boolean(opts.recursive),
       });
 
       if (opts.sarif) {

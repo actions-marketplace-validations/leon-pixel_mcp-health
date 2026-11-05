@@ -6,9 +6,11 @@ Catch rotten MCP configs before agents fail on them.
 
 ## Demo
 
-Real `mcp-health check --no-user` output. The first run is `fixtures/issues` (exit 2). The second is `fixtures/healthy` (exit 0). The checkout path is shown as the fixture directory. After `npm run build`, regenerate it with `python3 scripts/render-demo-gif.py` (needs Pillow and a monospace font).
+Real `mcp-health check --no-user` output. The first run is `fixtures/issues` (exit 2). The second is `fixtures/healthy` (exit 0). The checkout path is shown as the fixture directory. Hint lines and `project` scope labels are part of that output. After `npm run build`, regenerate the GIF with `python3 scripts/render-demo-gif.py` (needs Pillow and a monospace font). Record the cast with `python3 scripts/record-demo-cast.py`. Neither command uses the network. Play the cast locally with `asciinema play docs/demo.cast`.
 
 ![mcp-health check on fixtures/issues, then fixtures/healthy](docs/demo.gif)
+
+[asciinema cast of the same two commands](docs/demo.cast)
 
 ## Install
 
@@ -47,6 +49,7 @@ mcp-health check --no-user --probe --no-tools fixtures/probe-ok
 mcp-health check --no-user --sarif mcp-health.sarif fixtures/issues
 mcp-health check --no-user --github-annotations fixtures/issues
 mcp-health check --no-user --json fixtures/healthy
+mcp-health check --no-user --recursive .
 mcp-health check --no-user -f path/to/mcp.json .
 npx @leon-pixel/mcp-health check --no-user .
 mcp-health init
@@ -74,6 +77,22 @@ Text output labels each server row `project` or `user`. JSON keeps the file path
 
 A warn or fail row for a missing command, an unpinned package, a bad URL, a placeholder, a missing `envFile`, a missing transport, or a Claude Code `url` with no `type` includes one fix line under the finding. Copy that line into the config you already have open. The line names the command, package argument, or field and does not include secret values. JSON adds `hint` and keeps the other finding fields. SARIF and GitHub annotations include the same sentence. The scan does not rewrite the file. There is no `--fix` flag.
 
+### Accepted findings
+
+A repository can record findings it has already accepted in `.mcp-health.json` at the scan root. That file is not an MCP config, and a nested copy is not read. A missing file leaves the scan unchanged.
+
+```json
+{
+  "ignore": [
+    { "code": "UNPINNED_PACKAGE", "server": "unpinned", "file": "mcp.json" }
+  ]
+}
+```
+
+`file` is relative to the scan root. `mcp.json` and `services/api/mcp.json` are different files. A match is exact on `code`, `server`, and `file`. The finding message is not compared, and a secret value is not required. The matched finding is left out of the text report, JSON, SARIF, and GitHub annotations. It does not count toward `warn` or `fail`, and it does not change the exit code. Another finding on that server still does. When nothing remains, the server is ok.
+
+An entry that names an unknown code is `UNKNOWN_IGNORE`. An entry that matches nothing is `STALE_IGNORE`. An ignore file that is not the object above is `IGNORE_CONFIG`. Those are config-level warnings, so a typo or a stale entry stays in the report and still exits 1 when nothing else is wrong. The scan does not rewrite the config or the ignore file, and it does not print secret values.
+
 ## GitHub Action
 
 ```yaml
@@ -93,7 +112,7 @@ jobs:
 
 The action is listed on the Marketplace as [mcp-health-doctor](https://github.com/marketplace/actions/mcp-health-doctor). `uses: leon-pixel/mcp-health@v1` installs that listing.
 
-`path` is the scan root, relative to the job workspace. In a monorepo, point it at the package that holds the MCP config. Other packages are not scanned.
+`path` is the scan root, relative to the job workspace. `check` reads project configs in that directory only. A nested file such as `services/api/.cursor/mcp.json` is not included unless you pass `--recursive`, or point `path` at that package.
 
 ```yaml
 - uses: leon-pixel/mcp-health@v1
@@ -103,6 +122,15 @@ The action is listed on the Marketplace as [mcp-health-doctor](https://github.co
 ```
 
 The action always passes `--no-user`, so the job does not read the runner's user-level configs. `args` are additional flags. Setting `args` does not remove `--no-user`. The example above runs `check --no-user --probe`, plus the annotation, allow-missing, and SARIF flags the action adds itself.
+
+`--recursive` finds the same project-relative candidates under subdirectories, so one job can cover `services/api/.cursor/mcp.json` and `apps/web/.vscode/mcp.json`. Both rows are labeled `project`. The walk skips `node_modules`, `.git`, `dist`, `build`, `vendor`, `.venv`, `venv`, and `target`. It does not follow a symlink that resolves outside the scan root. A config 8 directories below the scan root is still found, and one directory deeper is not. User-level configs are still read once. `--no-user` still skips them. The exit code is the worst status in the scan. A directory that still has no config is `NO_CONFIG`. The action has no recursive input. Pass the flag through `args`, which is appended after `--no-user`:
+
+```yaml
+- uses: leon-pixel/mcp-health@v1
+  with:
+    path: .
+    args: --recursive
+```
 
 `include-user: true` drops that `--no-user` and scans the runner's Cursor, Claude, VS Code, Codex, and other user configs. A GitHub-hosted runner usually has an empty home directory. A self-hosted runner reads that machine's user. An explicit `--no-user` inside `args` still skips user configs.
 
@@ -146,7 +174,7 @@ jobs:
 
 The check step itself exits 0 so the upload can still run after findings. A following step exits with the real mcp-health code, so the job still fails on warnings and failures. The `exit-code` output is that code (`0`, `1`, or `2`).
 
-Optional `args`: `--online`, `--probe`, `--no-tools`, `--strict-variables`, `--probe-timeout 8000`, `--json`. These are added after `--no-user`.
+Optional `args`: `--online`, `--probe`, `--no-tools`, `--strict-variables`, `--probe-timeout 8000`, `--json`, `--recursive`. These are added after `--no-user`.
 
 ## Gate a commit
 
@@ -184,6 +212,8 @@ repos:
 
 ## What it scans
 
+`check` reads the project paths below from the scan root. `--recursive` reads those same paths in subdirectories, skipping `node_modules`, `.git`, `dist`, `build`, `vendor`, `.venv`, `venv`, and `target`. User-level files are still read once.
+
 **Project** (a missing file is skipped):
 
 | Client | Path | Shape |
@@ -196,13 +226,15 @@ repos:
 | Antigravity | `.agents/mcp_config.json` | `mcpServers`. `command` and `args` are stdio. `serverUrl` or `url` is a remote URL. A file with no `mcpServers` key is skipped |
 | Kiro | `.kiro/settings/mcp.json` | `mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `disabled: true` is not checked. A file with no `mcpServers` key is skipped |
 | OpenCode | `opencode.json`, `opencode.jsonc` | `mcp` map. `type: "local"` uses `command[0]` as the program and the rest as args. `environment` is checked like `env`. `type: "remote"` uses `url`. `enabled: false` is not checked. Comments in `opencode.jsonc` are allowed. `tools`, `agent`, `plugin`, and `$schema` are not servers. A file with no `mcp` key is skipped |
+| Amazon Q Developer | `.amazonq/mcp.json`, `.amazonq/default.json` | `mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `env` and `headers` are checked. `disabled: true` is not checked. `default.json` is the GUI agent file and is read only when it contains `mcpServers`. Other keys in that file are not servers. A `default.json` with no `mcpServers` key is skipped. A legacy `mcp.json` is still read |
+| Amp | `.amp/settings.json`, `.amp/settings.jsonc` | `amp.mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `env` and `headers` are checked. Comments in `settings.jsonc` are allowed. Other keys are not servers. A file with no `amp.mcpServers` key is skipped. Workspace approval is Amp's runtime prompt; the scan still checks the entry |
 | Continue | `.continue/config.yaml`, `.continue/mcpServers/*.{yaml,yml,json}` | `mcpServers` list of `{ name, command, args, env, url }`. A JSON file in that directory may instead be a `mcpServers` object. A file with no `mcpServers` list is skipped |
 | Junie | `.junie/mcp/mcp.json` | `mcpServers` |
 | Windsurf | `.windsurf/mcp_config.json` | `mcpServers`. Remote URLs may be `serverUrl` or `url` |
 | Zed | `.zed/settings.json` | `context_servers`. `command` may be a string or `{ "path", "args", "env" }`. `"source": "extension"` is an extension server. Comments and trailing commas are allowed |
 | Codex | `.codex/config.toml` | `[mcp_servers.<name>]` with `command`, `args`, `cwd`, `url`, `env`, `http_headers`, `bearer_token_env_var`, `env_http_headers`, `enabled` |
 
-A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, an Antigravity `mcp_config.json` with no `mcpServers` key, a Kiro `mcp.json` with no `mcpServers` key, an OpenCode config with no `mcp` key, or another settings file with no MCP section is skipped. It is not a failed scan. A Claude Code settings file that does contain `mcpServers` is `MCP_SERVERS_IGNORED`, because Claude Code does not load servers from that file.
+A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a Continue file with no `mcpServers` list, a Gemini CLI `settings.json` with no `mcpServers` key, an Antigravity `mcp_config.json` with no `mcpServers` key, a Kiro `mcp.json` with no `mcpServers` key, an OpenCode config with no `mcp` key, an Amazon Q `default.json` with no `mcpServers` key, an Amp settings file with no `amp.mcpServers` key, a Goose `config.yaml` with no `extensions` key, or another settings file with no MCP section is skipped. It is not a failed scan. A Claude Code settings file that does contain `mcpServers` is `MCP_SERVERS_IGNORED`, because Claude Code does not load servers from that file. Goose has no project config.
 
 **User-level** (disable with `--no-user`):
 
@@ -214,6 +246,9 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - Antigravity `~/.gemini/config/mcp_config.json`. This is not Gemini CLI's `settings.json`, and `GEMINI_CLI_HOME` does not select it. Shape `mcpServers`. `command` and `args` are stdio. `serverUrl` or `url` is a remote URL. A file with no `mcpServers` key is skipped
 - Kiro `~/.kiro/settings/mcp.json` on macOS, Linux, and Windows (`%USERPROFILE%\.kiro\settings\mcp.json`, not `%APPDATA%`). Shape `mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `disabled: true` is not checked. A file with no `mcpServers` key is skipped. Kiro merges this file with the workspace file and lets the workspace entry win; mcp-health reports both rows. Agent JSON and `KIRO_HOME` are not scanned
 - OpenCode `$XDG_CONFIG_HOME/opencode/opencode.json` and `opencode.jsonc` (default `~/.config/opencode/` on macOS, Linux, and Windows, not `%APPDATA%`). A non-empty `OPENCODE_CONFIG` replaces those files. Shape `mcp`. `type: "local"` uses `command[0]` as the program and the rest as args. `environment` is checked like `env`. `type: "remote"` uses `url`. `enabled: false` is not checked. Comments in `opencode.jsonc` are allowed. A file with no `mcp` key is skipped. Remote `.well-known` config and `OPENCODE_CONFIG_CONTENT` are not scanned
+- Amazon Q Developer `~/.aws/amazonq/mcp.json` and `~/.aws/amazonq/default.json` on macOS, Linux, and Windows (`%USERPROFILE%\.aws\amazonq\`, not `%APPDATA%`). Shape `mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `env` and `headers` are checked. `disabled: true` is not checked. `default.json` is read only when it contains `mcpServers`. A `default.json` with no `mcpServers` key is skipped. Q gives the workspace file precedence at runtime; mcp-health reports both rows. `useLegacyMcpJson` is not applied, so a legacy `mcp.json` is still checked
+- Amp `~/.config/amp/settings.json` and `settings.jsonc` on macOS, Linux, and Windows (`%USERPROFILE%\.config\amp\`, not `%APPDATA%`). `XDG_CONFIG_HOME` does not move these files. Shape `amp.mcpServers`. `command` and `args` are stdio. `url` is a remote URL. `env` and `headers` are checked. Comments in `settings.jsonc` are allowed. A file with no `amp.mcpServers` key is skipped. Hosted remote registry entries and skill `mcp.json` bundles are not scanned. Workspace approval is Amp's runtime prompt; the scan still checks the entry
+- Goose `$XDG_CONFIG_HOME/goose/config.yaml` when `XDG_CONFIG_HOME` is an absolute path, otherwise `~/.config/goose/config.yaml`, on macOS and Linux. A relative `XDG_CONFIG_HOME` is ignored. On Windows the file is `%APPDATA%\Block\goose\config\config.yaml`, and `XDG_CONFIG_HOME` is not used. There is no `.goose/` project path. `extensions` is the map. `type: stdio` uses `cmd` and `args`. `type: streamable_http` uses `uri` as the URL. `type: builtin` and `type: platform` are skipped. `enabled: false` is not checked. `envs` is checked like `env`. A file with no `extensions` key is skipped. `secrets.yaml`, `permission.yaml`, and session files are not read. An absolute `GOOSE_PATH_ROOT` is not scanned
 - Claude Code `~/.claude.json`: top-level `mcpServers`, and `projects[<absolute path>].mcpServers` for this scan root only. A key matches when it is the same directory as the scan root, including a symlink and macOS `/tmp` versus `/private/tmp`. Other projects in the file are ignored. `CLAUDE_CONFIG_DIR` is the directory that holds `.claude.json` instead of the home directory. On Windows the file is `%USERPROFILE%\.claude.json`
 - Continue `~/.continue/config.yaml` (`mcpServers` list)
 - Junie `~/.junie/mcp/mcp.json`
@@ -233,7 +268,7 @@ A Codex `config.toml`, a `~/.claude.json` with no servers for this scan root, a 
 - In a VS Code `servers` config, an `env` value may be a string, a number, or null. A number is checked as its decimal string. Null omits the variable and is not `PLACEHOLDER_ENV`. A boolean or object is still `SCHEMA_ERROR`. Other clients still require string env values
 - Cursor stdio (`.cursor/mcp.json` and project `mcp.json`) and VS Code stdio `envFile` warn `ENV_FILE_MISSING` when the expanded path is not a file. The finding is a warning. The file is not read. A value that still contains `${…}` is not also `ENV_FILE_MISSING`. HTTP servers, `.mcp.json`, and `.github/mcp.json` do not use `envFile`
 - Config variables: `${workspaceFolder}`, `${userHome}`, `${pathSeparator}`, `${CLAUDE_PROJECT_DIR}`, a set `${env:NAME}`, and Claude `${VAR}` / `${VAR:-default}` are expanded. `${input:…}`, an unset `${env:NAME}`, and an unset `${VAR}` with no default are warnings (`UNRESOLVED_VARIABLE`), not failures. Any other leftover `${…}` token fails the server. A URL that still contains `${…}` is not also `BAD_URL`. `--strict-variables` fails on the warnings too. Values are never printed
-- `disabled: true` (Cursor, Kiro) and `enabled: false` (Codex, Zed, OpenCode) are reported as disabled and are not checked
+- `disabled: true` (Cursor, Kiro, Amazon Q) and `enabled: false` (Codex, Zed, OpenCode, Goose) are reported as disabled and are not checked
 - Zed `"source": "extension"` is an extension-provided server. It is not a missing command
 - `--online`: for `npx`, `npm exec`, `bunx`, `pnpm`, and `yarn`, npm latest vs the pinned version or semver range. For `uvx`, the same check reads PyPI project JSON (`info.version`) for the distribution name. `pkg==1.2.3`, `pkg>=1`, and extras such as `pkg[extra]==1.2.3` use that name, not the specifier. `NPM_CURRENT` when the pin includes latest, `NPM_DRIFT` when it does not, and `NPM_LATEST` when the package is unpinned. Those messages name npm or PyPI. A registry miss or a network failure is a warning, `NPM_LOOKUP_FAILED`, and the message names that registry. An offline scan does not call either registry
 - `--probe`: MCP handshake (stdio spawn, or HTTP POST). Stdio is spawned in the scan root, or in `cwd` when that client uses it. Stdio matches the JSON-RPC id and skips logs and notifications. HTTP sends the config headers, plus Codex `bearer_token_env_var` and `env_http_headers` when those variables are set. When initialize returns `Mcp-Session-Id`, the probe sends that header on the later requests in that probe (the initialized notification and `tools/list`). A successful `server/discover` fallback uses the session id from that response on `tools/list` instead. A server that does not mint a session id is unchanged. The session id is not printed. The HTTP probe speaks `http:` and `https:` only. `ws:`, `wss:`, `unix:`, and `pipe:` are `PROBE_SKIPPED`. A 401 with an OAuth `WWW-Authenticate` challenge is a warning (`PROBE_OAUTH`); the editor signs in and this probe does not. Env values are never printed
@@ -249,7 +284,7 @@ The initialize request uses protocol revision `2025-11-25`. If the server reject
 
 mcp-health reads the MCP config files already in a repo (and, unless you pass `--no-user`, the user-level files above) and reports whether those entries will load: missing commands, bad URLs, unpinned packages, optional registry drift, and an optional handshake that includes `tools/list`. The GitHub Action is the CI form of that scan, with annotations and SARIF.
 
-[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Copilot, Windsurf, Zed, or Codex config files.
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) (`@modelcontextprotocol/inspector`) is the interactive debugger for one server you already know how to start. Its web, CLI, and TUI clients connect to that server so you can inspect and call tools, resources, and prompts. It does not scan Cursor, VS Code, Claude, Continue, Junie, Cline, Gemini CLI, Antigravity, Kiro, OpenCode, Amazon Q Developer, Amp, Goose, Copilot, Windsurf, Zed, or Codex config files.
 
 [MCP Doctor](https://mcpdoctor.ai/) (`npx mcpdoctor test …`) grades one server command against the MCP spec. [mcp-healthcheck](https://github.com/SiluPanda/mcp-healthcheck) is a liveness probe for one server URL or stdio command, including Kubernetes-style checks. mcp-health does not call tools, score spec compliance, or watch a running server. It checks the configs an agent will load.
 
