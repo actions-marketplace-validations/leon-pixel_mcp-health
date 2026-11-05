@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "aws-docs": {
+      "command": "node",
+      "args": ["--version"]
+    },
+    "remote": {
+      "url": "https://example.com/mcp"
+    },
+    "paused": {
+      "command": "definitely-missing-binary-xyz",
+      "disabled": true
+    }
+  }
+}

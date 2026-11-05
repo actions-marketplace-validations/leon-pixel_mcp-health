@@ -245,7 +245,7 @@ function configuredUrlField(server: ParsedServer): string {
   return "url";
 }
 
-/** Cursor and Kiro `disabled: true`, or Codex, Zed, and OpenCode `enabled: false`. */
+/** Cursor, Kiro, and Amazon Q `disabled: true`, or Codex, Zed, OpenCode, and Goose `enabled: false`. */
 export function isServerDisabled(server: ParsedServer): boolean {
   return server.raw.disabled === true || server.raw.enabled === false;
 }
@@ -1151,6 +1151,8 @@ function readsEnvFile(file: string, format: ConfigFile["format"]): boolean {
   const ignored = new Set([
     ".junie",
     ".kiro",
+    ".amazonq",
+    "amazonq",
     ".continue",
     ".github",
     ".vscode",

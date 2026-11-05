@@ -16,6 +16,7 @@ import { discoverConfigPaths, __testing } from "./discover.js";
 import { isClaudeSettingsFile, parseConfigFile } from "./parse.js";
 import { exitCode, formatHuman, formatJson } from "./report.js";
 import { runCheck } from "./run.js";
+import { buildSarif, formatAnnotations } from "./sarif.js";
 import type { HealthReport } from "./types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -2277,6 +2278,866 @@ describe("OpenCode mcp config", () => {
       expect(codes(customSkipped)).not.toContain("NO_MCP_SECTION");
       expect(codes(customSkipped)).not.toContain("UNKNOWN_FORMAT");
       expectSecretsHidden(customSkipped, [secret]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Amazon Q Developer mcp config", () => {
+  const secret = "amazonq-secret-do-not-print";
+
+  function writeJson(file: string, body: unknown) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(body));
+  }
+
+  it("reads workspace mcp.json and default.json, skips a missing file and a default.json with no mcpServers, and does not rewrite them", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-amazonq-project-"));
+    const mcpFile = join(root, ".amazonq", "mcp.json");
+    const defaultFile = join(root, ".amazonq", "default.json");
+    try {
+      expect(__testing.PROJECT_CANDIDATES).toContain(".amazonq/mcp.json");
+      expect(__testing.PROJECT_CANDIDATES).toContain(".amazonq/default.json");
+      expect(discoverConfigPaths(root, { includeUserConfig: false })).toEqual([]);
+
+      const missing = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(missing)).toEqual(["NO_CONFIG"]);
+      expect(codes(missing)).not.toContain("FILE_NOT_FOUND");
+
+      const pinned = JSON.stringify({
+        mcpServers: { local: { command: "node", args: ["--version"] } },
+      });
+      mkdirSync(dirname(mcpFile), { recursive: true });
+      writeFileSync(mcpFile, pinned);
+      const healthy = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(readFileSync(mcpFile, "utf8")).toBe(pinned);
+      expect(exitCode(healthy)).toBe(0);
+      expect(healthy.servers.find((server) => server.name === "local")?.scope).toBe(
+        "project",
+      );
+      expect(
+        healthy.servers.find((server) => server.name === "local")?.findings.map(
+          (finding) => finding.code,
+        ),
+      ).toEqual(["HEALTHY"]);
+
+      const original = JSON.stringify({
+        mcpServers: {
+          local: {
+            command: "node",
+            args: ["--version"],
+            env: { TOKEN: secret },
+            envFile: ".env.missing-amazonq",
+          },
+          remote: {
+            url: "https://example.com/mcp",
+            headers: { Authorization: "Bearer your-token-here" },
+          },
+          floating: { command: "npx", args: ["-y", "@scope/amazonq-server"] },
+          pinnedPkg: { command: "npx", args: ["-y", "@scope/amazonq-server@1.2.3"] },
+          paused: { command: "definitely-missing-binary-xyz", disabled: true },
+        },
+      });
+      writeFileSync(mcpFile, original);
+      const defaultOriginal = JSON.stringify({
+        name: "q-developer",
+        tools: ["fs_read"],
+        useLegacyMcpJson: true,
+        note: secret,
+      });
+      writeFileSync(defaultFile, defaultOriginal);
+
+      const parsed = parseConfigFile(mcpFile);
+      expect(parsed.format).toBe("mcpServers");
+      expect(parsed.servers.find((server) => server.name === "local")?.transport).toEqual({
+        kind: "stdio",
+        command: "node",
+        args: ["--version"],
+      });
+      expect(parsed.servers.find((server) => server.name === "remote")?.transport).toEqual({
+        kind: "http",
+        url: "https://example.com/mcp",
+      });
+      expect(parseConfigFile(defaultFile).format).toBe("none");
+
+      const report = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(readFileSync(mcpFile, "utf8")).toBe(original);
+      expect(readFileSync(defaultFile, "utf8")).toBe(defaultOriginal);
+      const byName = new Map(report.servers.map((server) => [server.name, server]));
+      expect(byName.get("local")?.scope).toBe("project");
+      expect(byName.get("local")?.findings.map((finding) => finding.code)).toEqual(["HEALTHY"]);
+      expect(byName.get("local")?.findings.map((finding) => finding.code)).not.toContain(
+        "ENV_FILE_MISSING",
+      );
+      expect(byName.get("remote")?.transport).toBe("http");
+      expect(byName.get("remote")?.findings.map((finding) => finding.code)).toContain(
+        "PLACEHOLDER_HEADER",
+      );
+      expect(byName.get("floating")?.findings.map((finding) => finding.code)).toContain(
+        "UNPINNED_PACKAGE",
+      );
+      expect(byName.get("pinnedPkg")?.findings.map((finding) => finding.code)).not.toContain(
+        "UNPINNED_PACKAGE",
+      );
+      expect(byName.get("paused")?.findings.map((finding) => finding.code)).toEqual([
+        "DISABLED",
+      ]);
+      expect(codes(report)).toContain("SKIPPED_NO_MCP");
+      expect(codes(report)).not.toContain("NO_CONFIG");
+      expect(codes(report)).not.toContain("FILE_NOT_FOUND");
+      expect(codes(report)).not.toContain("SCHEMA_ERROR");
+      expect(codes(report)).not.toContain("NO_MCP_SECTION");
+      expect(codes(report)).not.toContain("ENV_FILE_MISSING");
+      expectSecretsHidden(report, [secret]);
+
+      rmSync(mcpFile);
+      const onlyDefault = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(onlyDefault)).toEqual(["SKIPPED_NO_MCP"]);
+      expect(codes(onlyDefault)).not.toContain("NO_CONFIG");
+      expect(codes(onlyDefault)).not.toContain("SCHEMA_ERROR");
+      expect(codes(onlyDefault)).not.toContain("NO_MCP_SECTION");
+      expect(onlyDefault.summary.fail).toBe(0);
+      expectSecretsHidden(onlyDefault, [secret]);
+
+      writeFileSync(mcpFile, "{ not json");
+      const malformed = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(malformed)).toContain("PARSE_ERROR");
+      expect(readFileSync(mcpFile, "utf8")).toBe("{ not json");
+
+      writeJson(defaultFile, {
+        tools: [secret],
+        mcpServers: { fromDefault: { command: "node", args: ["--version"] } },
+      });
+      const fromDefault = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(fromDefault.servers.find((server) => server.name === "fromDefault")?.scope).toBe(
+        "project",
+      );
+      expect(
+        fromDefault.servers
+          .find((server) => server.name === "fromDefault")
+          ?.findings.map((finding) => finding.code),
+      ).toEqual(["HEALTHY"]);
+      expectSecretsHidden(fromDefault, [secret]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads ~/.aws/amazonq unless --no-user, and ignores %APPDATA%", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-amazonq-user-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-amazonq-home-"));
+    const appData = join(home, "AppData", "Roaming");
+    const userMcp = join(home, ".aws", "amazonq", "mcp.json");
+    const userDefault = join(home, ".aws", "amazonq", "default.json");
+    const projectMcp = join(root, ".amazonq", "mcp.json");
+    try {
+      for (const platform of ["darwin", "linux", "win32"] as const) {
+        expect(
+          __testing.amazonQUserPaths({
+            platform,
+            home,
+            env: { APPDATA: appData },
+          }),
+        ).toEqual([userMcp, userDefault]);
+      }
+
+      const absent = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(absent)).toEqual(["NO_CONFIG"]);
+      expect(codes(absent)).not.toContain("FILE_NOT_FOUND");
+
+      const userOriginal = JSON.stringify({
+        mcpServers: {
+          fromUser: {
+            command: "npx",
+            args: ["-y", "@scope/amazonq-user"],
+            env: { TOKEN: secret },
+          },
+        },
+      });
+      mkdirSync(dirname(userMcp), { recursive: true });
+      writeFileSync(userMcp, userOriginal);
+      writeJson(userDefault, {
+        tools: ["fs_read"],
+        mcpServers: {
+          fromDefault: {
+            url: "https://example.com/mcp",
+            headers: { Authorization: `Bearer ${secret}` },
+          },
+        },
+      });
+      writeJson(projectMcp, {
+        mcpServers: { fromProject: { command: "node", args: ["--version"] } },
+      });
+
+      const included = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { APPDATA: appData },
+      });
+      expect(readFileSync(userMcp, "utf8")).toBe(userOriginal);
+      expect(included.servers.find((server) => server.name === "fromUser")?.scope).toBe("user");
+      expect(included.servers.find((server) => server.name === "fromDefault")?.scope).toBe(
+        "user",
+      );
+      expect(included.servers.find((server) => server.name === "fromDefault")?.transport).toBe(
+        "http",
+      );
+      expect(included.servers.find((server) => server.name === "fromProject")?.scope).toBe(
+        "project",
+      );
+      expect(
+        included.servers
+          .find((server) => server.name === "fromUser")
+          ?.findings.map((finding) => finding.code),
+      ).toContain("UNPINNED_PACKAGE");
+      expect(included.files).toContain(userMcp);
+      expect(included.files).toContain(userDefault);
+      expect(included.files).toContain(projectMcp);
+      expect(included.files.some((file) => file.includes(appData))).toBe(false);
+      expectSecretsHidden(included, [secret]);
+
+      const skipped = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(names(skipped)).toEqual(["fromProject"]);
+      expect(skipped.files).toEqual([projectMcp]);
+      expect(codes(skipped)).not.toContain("FILE_NOT_FOUND");
+      expect(codes(skipped)).not.toContain("NO_CONFIG");
+
+      writeJson(userDefault, { tools: [secret], useLegacyMcpJson: false });
+      const userSkipped = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(names(userSkipped)).not.toContain("fromDefault");
+      expect(names(userSkipped)).toContain("fromUser");
+      expect(codes(userSkipped)).toContain("SKIPPED_NO_MCP");
+      expect(codes(userSkipped)).not.toContain("NO_MCP_SECTION");
+      expect(codes(userSkipped)).not.toContain("SCHEMA_ERROR");
+      expectSecretsHidden(userSkipped, [secret]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Amp settings", () => {
+  const secret = "amp-secret-do-not-print";
+  const setSecret = "amp-set-secret-do-not-print";
+
+  function writeJson(file: string, body: unknown) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(body));
+  }
+
+  function rendered(report: HealthReport): string {
+    return [
+      formatHuman(report),
+      formatJson(report),
+      formatAnnotations(report),
+      JSON.stringify(buildSarif(report)),
+    ].join("\n");
+  }
+
+  it("reads project json and jsonc, skips a file with no amp.mcpServers, and does not rewrite it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-amp-project-"));
+    const jsonFile = join(root, ".amp", "settings.json");
+    const jsoncFile = join(root, ".amp", "settings.jsonc");
+    const previous = {
+      MCP_HEALTH_AMP_TOKEN: process.env.MCP_HEALTH_AMP_TOKEN,
+      MCP_HEALTH_AMP_BASE: process.env.MCP_HEALTH_AMP_BASE,
+    };
+    delete process.env.MCP_HEALTH_AMP_TOKEN;
+    delete process.env.MCP_HEALTH_AMP_BASE;
+    try {
+      expect(__testing.PROJECT_CANDIDATES).toContain(".amp/settings.json");
+      expect(__testing.PROJECT_CANDIDATES).toContain(".amp/settings.jsonc");
+      expect(discoverConfigPaths(root, { includeUserConfig: false })).toEqual([]);
+
+      const missing = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(missing)).toEqual(["NO_CONFIG"]);
+      expect(codes(missing)).not.toContain("FILE_NOT_FOUND");
+
+      const pinned = JSON.stringify({
+        "amp.mcpServers": { local: { command: "node", args: ["--version"] } },
+        "amp.url": "https://ampcode.com/",
+      });
+      mkdirSync(dirname(jsonFile), { recursive: true });
+      writeFileSync(jsonFile, pinned);
+      const healthy = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(readFileSync(jsonFile, "utf8")).toBe(pinned);
+      expect(exitCode(healthy)).toBe(0);
+      expect(healthy.servers.find((server) => server.name === "local")?.scope).toBe("project");
+      expect(
+        healthy.servers.find((server) => server.name === "local")?.findings.map(
+          (finding) => finding.code,
+        ),
+      ).toEqual(["HEALTHY"]);
+
+      const original = `{
+        // comment with "amp.mcpServers" inside it
+        "amp.url": "https://ampcode.com/",
+        "amp.mcpServers": {
+          "local": {
+            "command": "node",
+            "args": ["--version"],
+            "env": { "TOKEN": "${secret}" },
+          },
+          "remote": {
+            "url": "\${MCP_HEALTH_AMP_BASE}/mcp",
+            "headers": { "Authorization": "Bearer \${MCP_HEALTH_AMP_TOKEN}" },
+          },
+          "placeholder": {
+            "url": "https://example.com/mcp",
+            "headers": { "Authorization": "Bearer your-token-here" },
+          },
+        },
+        "mcpServers": {
+          "not-amp": { "command": "definitely-missing-binary-xyz" },
+        },
+      }`;
+      writeFileSync(jsoncFile, original);
+      rmSync(jsonFile);
+
+      const parsed = parseConfigFile(jsoncFile);
+      expect(parsed.format).toBe("mcpServers");
+      expect(parsed.servers.find((server) => server.name === "local")?.transport).toEqual({
+        kind: "stdio",
+        command: "node",
+        args: ["--version"],
+      });
+      expect(parsed.servers.find((server) => server.name === "remote")?.transport).toEqual({
+        kind: "http",
+        url: "${MCP_HEALTH_AMP_BASE}/mcp",
+      });
+      expect(parsed.servers.map((server) => server.name)).not.toContain("not-amp");
+
+      const unset = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(readFileSync(jsoncFile, "utf8")).toBe(original);
+      expect(unset.servers.find((server) => server.name === "local")?.scope).toBe("project");
+      expect(
+        unset.servers.find((server) => server.name === "local")?.findings.map(
+          (finding) => finding.code,
+        ),
+      ).toEqual(["HEALTHY"]);
+      expect(
+        unset.servers.find((server) => server.name === "remote")?.findings.map(
+          (finding) => finding.code,
+        ),
+      ).toContain("UNRESOLVED_VARIABLE");
+      expect(
+        unset.servers.find((server) => server.name === "placeholder")?.findings.map(
+          (finding) => finding.code,
+        ),
+      ).toContain("PLACEHOLDER_HEADER");
+      expect(names(unset)).not.toContain("not-amp");
+      expect(codes(unset)).not.toContain("COMMAND_NOT_FOUND");
+      expect(codes(unset)).not.toContain("NO_CONFIG");
+      expect(codes(unset)).not.toContain("FILE_NOT_FOUND");
+      expect(rendered(unset)).not.toContain(secret);
+      expect(rendered(unset)).not.toContain(setSecret);
+
+      process.env.MCP_HEALTH_AMP_TOKEN = setSecret;
+      process.env.MCP_HEALTH_AMP_BASE = "https://example.test";
+      const set = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(
+        set.servers.find((server) => server.name === "remote")?.findings.map(
+          (finding) => finding.code,
+        ),
+      ).toEqual(["HEALTHY"]);
+      const dumped = rendered(set);
+      expect(dumped).not.toContain(secret);
+      expect(dumped).not.toContain(setSecret);
+      expect(dumped).not.toContain("https://example.test");
+
+      writeJson(jsonFile, {
+        "amp.url": "https://ampcode.com/",
+        "amp.mcpPermissions": [],
+        mcpServers: { notAmp: { command: "definitely-missing-binary-xyz" } },
+        note: secret,
+      });
+      const skipped = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(skipped)).toContain("SKIPPED_NO_MCP");
+      expect(codes(skipped)).not.toContain("NO_MCP_SECTION");
+      expect(codes(skipped)).not.toContain("SCHEMA_ERROR");
+      expect(codes(skipped)).not.toContain("COMMAND_NOT_FOUND");
+      expect(names(skipped)).not.toContain("notAmp");
+      expect(parseConfigFile(jsonFile).format).toBe("none");
+      expect(rendered(skipped)).not.toContain(secret);
+
+      writeJson(jsonFile, { "amp.mcpServers": [] });
+      const invalid = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(invalid)).toContain("SCHEMA_ERROR");
+      expect(parseConfigFile(jsonFile).error).toContain("amp.mcpServers");
+
+      const broken = "{ not json";
+      writeFileSync(jsonFile, broken);
+      const malformed = await runCheck({ root, includeUserConfig: false, env: {} });
+      expect(codes(malformed)).toContain("PARSE_ERROR");
+      expect(readFileSync(jsonFile, "utf8")).toBe(broken);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads ~/.config/amp unless --no-user, on every platform, and ignores XDG and %APPDATA%", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-amp-user-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-amp-home-"));
+    const xdg = join(home, "xdg");
+    const appData = join(home, "AppData", "Roaming");
+    const projectFile = join(root, ".amp", "settings.json");
+    const userJson = join(home, ".config", "amp", "settings.json");
+    const userJsonc = join(home, ".config", "amp", "settings.jsonc");
+    try {
+      const defaults = [userJson, userJsonc];
+      for (const platform of ["darwin", "linux", "win32"] as const) {
+        expect(
+          __testing.ampUserPaths({
+            platform,
+            home,
+            env: { APPDATA: appData, XDG_CONFIG_HOME: xdg },
+          }),
+        ).toEqual(defaults);
+      }
+
+      const absent = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(absent)).toEqual(["NO_CONFIG"]);
+      expect(codes(absent)).not.toContain("FILE_NOT_FOUND");
+
+      const userOriginal = [
+        "{",
+        "  // user jsonc",
+        '  "amp.mcpServers": {',
+        '    "fromUser": {',
+        '      "command": "node",',
+        '      "args": ["--version"],',
+        `      "env": { "TOKEN": "${secret}" }`,
+        "    }",
+        "  },",
+        '  "amp.url": "https://ampcode.com/"',
+        "}",
+        "",
+      ].join("\n");
+      mkdirSync(dirname(userJsonc), { recursive: true });
+      writeFileSync(userJsonc, userOriginal);
+      writeJson(userJson, {
+        "amp.mcpServers": {
+          shared: { command: "npx", args: ["-y", "@scope/amp-user"] },
+        },
+      });
+      writeJson(projectFile, {
+        "amp.mcpServers": {
+          shared: { command: "node", args: ["--version"] },
+          fromProject: { url: "https://example.com/mcp" },
+        },
+        "amp.showCosts": secret,
+      });
+
+      const included = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { APPDATA: appData, XDG_CONFIG_HOME: xdg },
+      });
+      expect(readFileSync(userJsonc, "utf8")).toBe(userOriginal);
+      const shared = included.servers.filter((server) => server.name === "shared");
+      expect(shared.map((server) => server.scope).sort()).toEqual(["project", "user"]);
+      expect(included.files).toContain(userJson);
+      expect(included.files).toContain(userJsonc);
+      expect(included.files).toContain(projectFile);
+      expect(included.servers.find((server) => server.name === "fromUser")?.scope).toBe("user");
+      expect(included.servers.find((server) => server.name === "fromProject")?.transport).toBe(
+        "http",
+      );
+      expect(
+        shared.find((server) => server.scope === "user")?.findings.map((finding) => finding.code),
+      ).toContain("UNPINNED_PACKAGE");
+      expect(rendered(included)).not.toContain(secret);
+
+      const skipped = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: { XDG_CONFIG_HOME: xdg, APPDATA: appData },
+      });
+      expect(names(skipped).sort()).toEqual(["fromProject", "shared"]);
+      expect(skipped.files).toEqual([projectFile]);
+      expect(codes(skipped)).not.toContain("FILE_NOT_FOUND");
+      expect(codes(skipped)).not.toContain("NO_CONFIG");
+
+      writeJson(userJson, { "amp.url": secret });
+      writeJson(userJsonc, { "amp.mcpPermissions": [secret] });
+      const userSkipped = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(names(userSkipped)).not.toContain("fromUser");
+      expect(codes(userSkipped)).toContain("SKIPPED_NO_MCP");
+      expect(codes(userSkipped)).not.toContain("NO_MCP_SECTION");
+      expect(rendered(userSkipped)).not.toContain(secret);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Goose extensions", () => {
+  const secret = "goose-secret-do-not-print";
+
+  function rendered(report: HealthReport): string {
+    return [
+      formatHuman(report),
+      formatJson(report),
+      formatAnnotations(report),
+      JSON.stringify(buildSarif(report)),
+    ].join("\n");
+  }
+
+  it("reads the user config.yaml, skips builtin and platform extensions, and does not read secrets or a project .goose path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mcp-health-goose-root-"));
+    const home = mkdtempSync(join(tmpdir(), "mcp-health-goose-home-"));
+    const xdg = join(home, "xdg");
+    const appData = join(home, "AppData", "Roaming");
+    const gooseRoot = join(home, "goose-root");
+    const userFile = join(home, ".config", "goose", "config.yaml");
+    const xdgFile = join(xdg, "goose", "config.yaml");
+    const windowsFile = join(appData, "Block", "goose", "config", "config.yaml");
+    const projectFile = join(root, ".goose", "config.yaml");
+    try {
+      expect(__testing.PROJECT_CANDIDATES).not.toContain(".goose/config.yaml");
+      const unixDefault = join(home, ".config", "goose", "config.yaml");
+      for (const platform of ["darwin", "linux"] as const) {
+        expect(__testing.gooseUserPath({ platform, home, env: {} })).toBe(unixDefault);
+        expect(
+          __testing.gooseUserPath({
+            platform,
+            home,
+            env: { XDG_CONFIG_HOME: "  ", GOOSE_PATH_ROOT: gooseRoot },
+          }),
+        ).toBe(unixDefault);
+        expect(
+          __testing.gooseUserPath({
+            platform,
+            home,
+            env: { XDG_CONFIG_HOME: "relative/xdg", GOOSE_PATH_ROOT: gooseRoot },
+          }),
+        ).toBe(unixDefault);
+        expect(
+          __testing.gooseUserPath({ platform, home, env: { XDG_CONFIG_HOME: xdg } }),
+        ).toBe(xdgFile);
+      }
+      expect(
+        __testing.gooseUserPath({
+          platform: "win32",
+          home,
+          env: { APPDATA: appData, XDG_CONFIG_HOME: xdg, GOOSE_PATH_ROOT: gooseRoot },
+        }),
+      ).toBe(windowsFile);
+      expect(__testing.gooseUserPath({ platform: "win32", home, env: {} })).toBe(
+        join(home, "AppData", "Roaming", "Block", "goose", "config", "config.yaml"),
+      );
+
+      mkdirSync(dirname(projectFile), { recursive: true });
+      writeFileSync(
+        projectFile,
+        [
+          "extensions:",
+          "  from-project-goose:",
+          "    type: stdio",
+          "    cmd: node",
+          "    args: ['--version']",
+          "",
+        ].join("\n"),
+      );
+      const projectOnly = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(codes(projectOnly)).toEqual(["NO_CONFIG"]);
+      expect(projectOnly.files).not.toContain(projectFile);
+      expect(names(projectOnly)).not.toContain("from-project-goose");
+
+      const absent = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(absent)).toEqual(["NO_CONFIG"]);
+      expect(codes(absent)).not.toContain("FILE_NOT_FOUND");
+
+      const pinned = [
+        "extensions:",
+        "  local:",
+        "    type: stdio",
+        "    cmd: node",
+        "    args: ['--version']",
+        "    enabled: true",
+        "",
+      ].join("\n");
+      mkdirSync(dirname(userFile), { recursive: true });
+      writeFileSync(userFile, pinned);
+      const healthy = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { GOOSE_PATH_ROOT: gooseRoot },
+      });
+      expect(readFileSync(userFile, "utf8")).toBe(pinned);
+      expect(exitCode(healthy)).toBe(0);
+      expect(healthy.servers.find((server) => server.name === "local")?.scope).toBe("user");
+      expect(healthy.files).toContain(userFile);
+      expect(healthy.files).not.toContain(projectFile);
+      expect(names(healthy)).not.toContain("from-project-goose");
+
+      const original = [
+        "provider: openai",
+        "extensions:",
+        "  local:",
+        "    type: stdio",
+        "    cmd: node",
+        "    args: ['--version']",
+        "    enabled: true",
+        "    envs:",
+        `      TOKEN: ${secret}`,
+        "  floating:",
+        "    type: stdio",
+        "    cmd: npx",
+        "    args: ['-y', '@scope/goose-server']",
+        "  pinned:",
+        "    type: stdio",
+        "    cmd: npx",
+        "    args: ['-y', '@scope/goose-server@1.2.3']",
+        "  remote:",
+        "    type: streamable_http",
+        "    uri: https://example.com/mcp",
+        "    headers:",
+        "      Authorization: Bearer your-token-here",
+        "    envs:",
+        "      API_TOKEN: your-token-here",
+        "  paused:",
+        "    type: stdio",
+        "    cmd: definitely-missing-binary-xyz",
+        "    enabled: false",
+        "    envs:",
+        `      TOKEN: ${secret}`,
+        "  developer:",
+        "    type: builtin",
+        "    enabled: true",
+        "  computercontroller:",
+        "    type: platform",
+        "    enabled: true",
+        "",
+      ].join("\n");
+      writeFileSync(userFile, original);
+      const secretsFile = join(dirname(userFile), "secrets.yaml");
+      const permissionFile = join(dirname(userFile), "permission.yaml");
+      const sessionFile = join(dirname(userFile), "sessions", "session.json");
+      writeFileSync(secretsFile, `OPENAI_API_KEY: ${secret}\n`);
+      writeFileSync(permissionFile, `tools:\n  note: ${secret}\n`);
+      mkdirSync(dirname(sessionFile), { recursive: true });
+      writeFileSync(sessionFile, JSON.stringify({ secret }));
+
+      const parsed = parseConfigFile(userFile);
+      expect(parsed.format).toBe("goose");
+      expect(parsed.servers.find((server) => server.name === "local")?.transport).toEqual({
+        kind: "stdio",
+        command: "node",
+        args: ["--version"],
+      });
+      expect(parsed.servers.find((server) => server.name === "remote")?.transport).toEqual({
+        kind: "http",
+        url: "https://example.com/mcp",
+      });
+      expect(parsed.servers.map((server) => server.name)).not.toContain("developer");
+      expect(parsed.servers.map((server) => server.name)).not.toContain("computercontroller");
+
+      const report = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(readFileSync(userFile, "utf8")).toBe(original);
+      expect(readFileSync(secretsFile, "utf8")).toContain(secret);
+      const byName = new Map(report.servers.map((server) => [server.name, server]));
+      expect(byName.get("local")?.scope).toBe("user");
+      expect(byName.get("local")?.findings.map((finding) => finding.code)).toEqual(["HEALTHY"]);
+      expect(byName.get("floating")?.findings.map((finding) => finding.code)).toContain(
+        "UNPINNED_PACKAGE",
+      );
+      expect(byName.get("pinned")?.findings.map((finding) => finding.code)).not.toContain(
+        "UNPINNED_PACKAGE",
+      );
+      expect(byName.get("remote")?.transport).toBe("http");
+      expect(byName.get("remote")?.findings.map((finding) => finding.code)).toContain(
+        "PLACEHOLDER_HEADER",
+      );
+      expect(byName.get("remote")?.findings.map((finding) => finding.code)).toContain(
+        "PLACEHOLDER_ENV",
+      );
+      expect(byName.get("paused")?.findings.map((finding) => finding.code)).toEqual(["DISABLED"]);
+      expect(names(report)).not.toContain("developer");
+      expect(names(report)).not.toContain("computercontroller");
+      expect(names(report)).not.toContain("from-project-goose");
+      expect(codes(report)).not.toContain("NO_TRANSPORT");
+      expect(codes(report)).not.toContain("COMMAND_NOT_FOUND");
+      expect(codes(report)).not.toContain("NO_CONFIG");
+      expect(report.files).toEqual([userFile]);
+      expect(report.files).not.toContain(secretsFile);
+      expect(report.files).not.toContain(permissionFile);
+      expect(report.files).not.toContain(sessionFile);
+      expect(report.files).not.toContain(projectFile);
+      expect(rendered(report)).not.toContain(secret);
+
+      const skippedUser = await runCheck({
+        root,
+        includeUserConfig: false,
+        home,
+        env: {},
+      });
+      expect(codes(skippedUser)).toEqual(["NO_CONFIG"]);
+      expect(skippedUser.files).not.toContain(userFile);
+      expect(rendered(skippedUser)).not.toContain(secret);
+
+      writeFileSync(userFile, `provider: openai\nnote: ${secret}\n`);
+      const noExtensions = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(noExtensions)).toEqual(["SKIPPED_NO_MCP"]);
+      expect(codes(noExtensions)).not.toContain("NO_MCP_SECTION");
+      expect(codes(noExtensions)).not.toContain("NO_CONFIG");
+      expect(parseConfigFile(userFile).format).toBe("none");
+      expect(rendered(noExtensions)).not.toContain(secret);
+
+      writeFileSync(
+        userFile,
+        ["extensions:", "  developer:", "    type: builtin", "    enabled: true", ""].join("\n"),
+      );
+      const builtins = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(builtins)).toContain("EMPTY_SERVERS");
+      expect(codes(builtins)).not.toContain("NO_TRANSPORT");
+      expect(builtins.summary.fail).toBe(0);
+      expect(names(builtins)).not.toContain("developer");
+
+      writeFileSync(userFile, "extensions: [\n");
+      const malformed = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(malformed)).toContain("PARSE_ERROR");
+      expect(readFileSync(userFile, "utf8")).toBe("extensions: [\n");
+
+      writeFileSync(
+        userFile,
+        ["extensions:", "  old:", "    type: sse", "    uri: https://example.com/sse", ""].join(
+          "\n",
+        ),
+      );
+      const sse = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: {},
+      });
+      expect(codes(sse)).toContain("SCHEMA_ERROR");
+      expect(parseConfigFile(userFile).error).toContain("type");
+      expect(codes(sse)).not.toContain("NO_TRANSPORT");
+
+      mkdirSync(dirname(xdgFile), { recursive: true });
+      writeFileSync(
+        xdgFile,
+        [
+          "extensions:",
+          "  fromXdg:",
+          "    type: streamable_http",
+          "    uri: https://example.com/xdg",
+          `    envs: { TOKEN: ${secret} }`,
+          "",
+        ].join("\n"),
+      );
+      const fromXdg = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        env: { XDG_CONFIG_HOME: xdg, GOOSE_PATH_ROOT: gooseRoot },
+      });
+      expect(fromXdg.files).toContain(xdgFile);
+      expect(fromXdg.files).not.toContain(userFile);
+      expect(fromXdg.servers.find((server) => server.name === "fromXdg")?.scope).toBe("user");
+      expect(fromXdg.servers.find((server) => server.name === "fromXdg")?.transport).toBe(
+        "http",
+      );
+      expect(rendered(fromXdg)).not.toContain(secret);
+
+      mkdirSync(dirname(windowsFile), { recursive: true });
+      writeFileSync(
+        windowsFile,
+        [
+          "extensions:",
+          "  fromWindows:",
+          "    type: stdio",
+          "    cmd: node",
+          "    args: ['--version']",
+          "",
+        ].join("\n"),
+      );
+      const fromWindows = await runCheck({
+        root,
+        includeUserConfig: true,
+        home,
+        platform: "win32",
+        env: { APPDATA: appData, XDG_CONFIG_HOME: xdg },
+      });
+      expect(fromWindows.files).toContain(windowsFile);
+      expect(fromWindows.files).not.toContain(xdgFile);
+      expect(fromWindows.files).not.toContain(userFile);
+      expect(fromWindows.servers.find((server) => server.name === "fromWindows")?.scope).toBe(
+        "user",
+      );
+      expect(
+        fromWindows.servers
+          .find((server) => server.name === "fromWindows")
+          ?.findings.map((finding) => finding.code),
+      ).toEqual(["HEALTHY"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });

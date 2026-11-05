@@ -1,0 +1,17 @@
+{
+  // Workspace servers. Other keys are not servers.
+  "amp.url": "https://ampcode.com/",
+  "amp.mcpServers": {
+    "local": {
+      "command": "node",
+      "args": ["--version"],
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+    },
+    "paused": {
+      "command": "definitely-missing-binary-xyz",
+      "disabled": true,
+    },
+  },
+}
